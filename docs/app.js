@@ -1,4 +1,4 @@
-const DAY = 24 * 60 * 60 * 1000;
+﻿const DAY = 24 * 60 * 60 * 1000;
 const HISTORY_KEY = "nanikiru-learning-v1";
 const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
@@ -16,10 +16,17 @@ const wasmRequests = new Map();
 const WASM_ASSET_VERSION = "20260623-2";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
+const WASM_DEFAULT_FLAGS = Object.freeze({
+  enable_shanten_down: true,
+  enable_tegawari: true,
+});
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
 let selectedManagedProblemId = null;
+let wasmActiveRequestKey = null;
+let wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+let lastWasmMode = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -673,7 +680,10 @@ async function runWasmVerification() {
 }
 
 async function analyzeWithWasm(handText, melds, payload) {
+  const requestKey = buildWasmRequestKey(handText, melds, payload);
+  const mode = wasmModeForRequest(requestKey);
   const raw = await wasmAnalyze({
+    __wasmRequestKey: requestKey,
     round_wind: tileIndex(payload.round_wind),
     seat_wind: tileIndex(payload.seat_wind),
     dora_indicators: parseMpsz(payload.dora).map(tileIndex),
@@ -684,8 +694,8 @@ async function analyzeWithWasm(handText, melds, payload) {
     })),
     enable_reddora: true,
     enable_uradora: false,
-    enable_shanten_down: true,
-    enable_tegawari: true,
+    enable_shanten_down: mode.flags.enable_shanten_down,
+    enable_tegawari: mode.flags.enable_tegawari,
     objective: 2,
   });
   return summarizeWasmResult(raw, payload.turn);
@@ -701,6 +711,30 @@ function calculateAnswerGaps(simulation, answers) {
     answerGaps[answer] = Math.max(0, (best - answerMetric) / Math.max(Math.abs(best), 1e-12) * 100);
   });
   return answerGaps;
+}
+
+function buildWasmRequestKey(handText, melds, payload) {
+  return JSON.stringify({
+    hand: String(handText || ""),
+    melds: (melds || []).map((meld) => meld.mpsz || tilesToMpszClient(meld.tiles || [])).join(" "),
+    turn: Number(payload?.turn || 0),
+    round_wind: payload?.round_wind || "",
+    seat_wind: payload?.seat_wind || "",
+    dora: String(payload?.dora || ""),
+    objective: Number(payload?.objective || 2),
+  });
+}
+
+function wasmModeForRequest(requestKey) {
+  if (wasmActiveRequestKey !== requestKey) {
+    wasmActiveRequestKey = requestKey;
+    wasmActiveRequestMode = {
+      degraded: false,
+      fallbackReason: "",
+      flags: { ...WASM_DEFAULT_FLAGS },
+    };
+  }
+  return wasmActiveRequestMode;
 }
 
 function createWasmWorker() {
@@ -744,7 +778,7 @@ function resetWasmWorker(error = null) {
 }
 
 function isRecoverableWasmError(error) {
-  return /memory access out of bounds|out of memory|RuntimeError|Aborted|シミュレーターが停止|通信に失敗/i
+  return /memory access out of bounds|out of memory|RuntimeError|Aborted|Maximum call stack size exceeded|シミュレーターが停止|通信に失敗/i
     .test(error?.message || "");
 }
 
@@ -753,6 +787,18 @@ async function runWasmRequest(payload, allowRetry = true) {
     resetWasmWorker();
     createWasmWorker();
   }
+  const requestKey = payload.__wasmRequestKey || null;
+  const mode = requestKey
+    ? wasmModeForRequest(requestKey)
+    : { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+  if (!requestKey) {
+    wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+  }
+  const requestPayload = {
+    ...payload,
+    enable_shanten_down: mode.flags.enable_shanten_down,
+    enable_tegawari: mode.flags.enable_tegawari,
+  };
   try {
     return await new Promise((resolve, reject) => {
       const id = ++wasmRequestId;
@@ -762,10 +808,20 @@ async function runWasmRequest(payload, allowRetry = true) {
         reject(new Error("シミュレーターの計算が時間内に完了しませんでした。"));
       }, WASM_REQUEST_TIMEOUT);
       wasmRequests.set(id, { resolve, reject, timer });
-      wasmWorker.postMessage({ id, payload });
+      wasmWorker.postMessage({ id, payload: requestPayload });
     });
   } catch (error) {
     if (!allowRetry || !isRecoverableWasmError(error)) throw error;
+    if (requestKey) {
+      wasmActiveRequestMode = {
+        degraded: true,
+        fallbackReason: error?.message || String(error),
+        flags: {
+          enable_shanten_down: false,
+          enable_tegawari: false,
+        },
+      };
+    }
     resetWasmWorker();
     createWasmWorker();
     return runWasmRequest(payload, false);
@@ -779,6 +835,7 @@ function wasmAnalyze(payload) {
 }
 
 function summarizeWasmResult(raw, turn) {
+  lastWasmMode = wasmActiveRequestMode || { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
   const code = (index) => {
     if (index < 9) return `${index + 1}m`;
     if (index < 18) return `${index - 8}p`;
@@ -807,6 +864,7 @@ function summarizeWasmResult(raw, turn) {
     rows,
     searched: raw.searched,
     time: raw.time,
+    solver_mode: lastWasmMode,
   };
 }
 
@@ -879,7 +937,8 @@ async function generateWithWasm() {
       pending.push(sourceProblem);
     }
     const requested = Math.max(1, Math.min(100, payload.count || 10));
-    const specs = randomTransformSpecs(sourceVerification.hand, Math.max(40, requested * 12));
+    const specs = enumerateTransformSpecs(sourceVerification.hand);
+    shuffleArray(specs);
     const seen = new Set(problems.map(canonicalProblemKey));
     seen.add(sourceKey);
     const candidates = [];
@@ -903,6 +962,7 @@ async function generateWithWasm() {
       } catch {}
     }
     const qualified = [];
+    let fallbackUsed = Boolean(sourceVerification.simulation?.solver_mode?.degraded);
     for (let index = 0; index < candidates.length; index++) {
       setAdminMessage(
         `シミュレーターで類題候補を検証しています（${index + 1}/${candidates.length}）`,
@@ -915,6 +975,7 @@ async function generateWithWasm() {
           candidate.melds,
           payload
         );
+        if (simulation?.solver_mode?.degraded) fallbackUsed = true;
         const answerGaps = calculateAnswerGaps(simulation, candidate.answers);
         if (Math.max(...Object.values(answerGaps)) > payload.tolerance_percent + 1e-9) continue;
         qualified.push({
@@ -942,6 +1003,7 @@ async function generateWithWasm() {
           },
           simulator: simulation,
         });
+        if (qualified.length >= requested) break;
       } catch {}
     }
     shuffleArray(qualified);
@@ -953,7 +1015,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。${degreeText}。重複除外: ${skippedDuplicates}問。`,
+      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -1604,7 +1666,7 @@ function describeBlocksClient(hand) {
   return splitBlocksClient(hand).map((block) => tilesToMpszClient(block.tiles));
 }
 
-function randomTransformSpecs(hand, limit) {
+function enumerateTransformSpecs(hand) {
   const blocks = splitBlocksClient(hand);
   const suitMaps = [
     { m: "m", p: "p", s: "s" },
@@ -1616,26 +1678,39 @@ function randomTransformSpecs(hand, limit) {
   ];
   const specs = [];
   const seen = new Set();
-  const maxAttempts = Math.max(500, limit * 300);
-  for (let attempt = 0; attempt < maxAttempts && specs.length < limit; attempt++) {
-    const suitMap = suitMaps[Math.floor(Math.random() * suitMaps.length)];
-    const reverse = Math.random() < 0.5;
-    const slides = {};
-    blocks.filter((block) => block.suit !== "z").forEach((block) => {
-      slides[block.index] = block.slideOptions[
-        Math.floor(Math.random() * block.slideOptions.length)
-      ];
+  const movableBlocks = blocks.filter((block) => block.suit !== "z");
+  const slideState = {};
+  const emitSlides = (index) => {
+    if (index >= movableBlocks.length) {
+      suitMaps.forEach((suitMap) => {
+        [false, true].forEach((reverse) => {
+          const key = JSON.stringify([suitMap.m, suitMap.p, suitMap.s, reverse, slideState]);
+          if (seen.has(key)) return;
+          seen.add(key);
+          const degree = ["m", "p", "s"].filter((suit) => suitMap[suit] !== suit).length
+            + Number(reverse)
+            + Object.values(slideState).filter((delta) => delta !== 0).length;
+          if (!degree) return;
+          specs.push({ suit_map: { ...suitMap }, reverse, slides: { ...slideState }, degree });
+        });
+      });
+      return;
+    }
+    const block = movableBlocks[index];
+    block.slideOptions.forEach((delta) => {
+      slideState[block.index] = delta;
+      emitSlides(index + 1);
     });
-    const key = JSON.stringify([suitMap.m, suitMap.p, suitMap.s, reverse, slides]);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const degree = ["m", "p", "s"].filter((suit) => suitMap[suit] !== suit).length
-      + Number(reverse)
-      + Object.values(slides).filter((delta) => delta !== 0).length;
-    if (!degree) continue;
-    specs.push({ suit_map: { ...suitMap }, reverse, slides, degree });
-  }
+    delete slideState[block.index];
+  };
+  emitSlides(0);
   return specs;
+}
+
+function randomTransformSpecs(hand, limit = null) {
+  const specs = enumerateTransformSpecs(hand);
+  shuffleArray(specs);
+  return Number.isFinite(limit) ? specs.slice(0, limit) : specs;
 }
 
 function transformProblem(hand, answers, melds, spec) {
@@ -1774,6 +1849,7 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
       </div>
       <span>${simulation.turn}局目・${simulation.shanten?.all ?? "-"}シャンテン</span>
     </div>
+    ${simulation.solver_mode?.degraded ? `<p class="sim-warning">この結果は、シャンテン戻し・手替わりを無効化した状態で計算しています。</p>` : ""}
     <div class="sim-table-wrap">
       <table class="sim-table">
         <thead>
