@@ -35,6 +35,37 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
   expect(ranked[0].exp_score[6]).toBeCloseTo(1329.1878, 3);
 });
 
+test("wasm worker is recycled without breaking analysis", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    const payload = {
+      round_wind: 27,
+      seat_wind: 28,
+      dora_indicators: [],
+      hand: [4, 5, 13, 14, 16, 17, 21, 21, 23, 23, 24, 33, 33, 33],
+      melds: [],
+      enable_reddora: true,
+      enable_uradora: false,
+      enable_shanten_down: true,
+      enable_tegawari: true,
+      objective: 2,
+    };
+    const first = await wasmAnalyze(payload);
+    const firstGeneration = wasmWorkerGeneration;
+    wasmWorkerUseCount = WASM_RECYCLE_AFTER;
+    const second = await wasmAnalyze(payload);
+    return {
+      firstSuccess: first.success,
+      secondSuccess: second.success,
+      firstGeneration,
+      secondGeneration: wasmWorkerGeneration,
+    };
+  });
+  expect(result.firstSuccess).toBe(true);
+  expect(result.secondSuccess).toBe(true);
+  expect(result.secondGeneration).toBeGreaterThan(result.firstGeneration);
+});
+
 test("problem editor defaults to graphical tile input", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => showView("create"));

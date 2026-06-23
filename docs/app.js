@@ -9,7 +9,13 @@ let currentQuizContext = null;
 let filteredManagementProblems = [];
 let wasmWorker;
 let wasmRequestId = 0;
+let wasmWorkerUseCount = 0;
+let wasmWorkerGeneration = 0;
+let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
+const WASM_ASSET_VERSION = "20260623-1";
+const WASM_RECYCLE_AFTER = 24;
+const WASM_REQUEST_TIMEOUT = 240000;
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
@@ -673,19 +679,79 @@ function calculateAnswerGaps(simulation, answers) {
   return answerGaps;
 }
 
-function wasmAnalyze(payload) {
-  wasmWorker ||= new Worker("wasm/worker.js", { type: "module" });
-  wasmWorker.onmessage ||= (event) => {
+function createWasmWorker() {
+  const generation = ++wasmWorkerGeneration;
+  wasmWorker = new Worker(`wasm/worker.js?v=${WASM_ASSET_VERSION}`, { type: "module" });
+  wasmWorkerUseCount = 0;
+  wasmWorker.onmessage = (event) => {
+    if (generation !== wasmWorkerGeneration) return;
     const pending = wasmRequests.get(event.data.id);
     if (!pending) return;
     wasmRequests.delete(event.data.id);
+    clearTimeout(pending.timer);
+    wasmWorkerUseCount++;
     event.data.error ? pending.reject(new Error(event.data.error)) : pending.resolve(event.data.result);
   };
-  return new Promise((resolve, reject) => {
-    const id = ++wasmRequestId;
-    wasmRequests.set(id, { resolve, reject });
-    wasmWorker.postMessage({ id, payload });
-  });
+  wasmWorker.onerror = (event) => {
+    if (generation !== wasmWorkerGeneration) return;
+    const error = new Error(event.message || "シミュレーターが停止しました。");
+    resetWasmWorker(error);
+  };
+  wasmWorker.onmessageerror = () => {
+    if (generation !== wasmWorkerGeneration) return;
+    resetWasmWorker(new Error("シミュレーターとの通信に失敗しました。"));
+  };
+  return wasmWorker;
+}
+
+function resetWasmWorker(error = null) {
+  const worker = wasmWorker;
+  wasmWorker = null;
+  wasmWorkerUseCount = 0;
+  wasmWorkerGeneration++;
+  if (worker) worker.terminate();
+  if (error) {
+    wasmRequests.forEach((pending) => {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    });
+    wasmRequests.clear();
+  }
+}
+
+function isRecoverableWasmError(error) {
+  return /memory access out of bounds|out of memory|RuntimeError|Aborted|シミュレーターが停止|通信に失敗/i
+    .test(error?.message || "");
+}
+
+async function runWasmRequest(payload, allowRetry = true) {
+  if (!wasmWorker || wasmWorkerUseCount >= WASM_RECYCLE_AFTER) {
+    resetWasmWorker();
+    createWasmWorker();
+  }
+  try {
+    return await new Promise((resolve, reject) => {
+      const id = ++wasmRequestId;
+      const timer = setTimeout(() => {
+        wasmRequests.delete(id);
+        resetWasmWorker();
+        reject(new Error("シミュレーターの計算が時間内に完了しませんでした。"));
+      }, WASM_REQUEST_TIMEOUT);
+      wasmRequests.set(id, { resolve, reject, timer });
+      wasmWorker.postMessage({ id, payload });
+    });
+  } catch (error) {
+    if (!allowRetry || !isRecoverableWasmError(error)) throw error;
+    resetWasmWorker();
+    createWasmWorker();
+    return runWasmRequest(payload, false);
+  }
+}
+
+function wasmAnalyze(payload) {
+  const queued = wasmQueue.then(() => runWasmRequest(payload));
+  wasmQueue = queued.catch(() => {});
+  return queued;
 }
 
 function summarizeWasmResult(raw, turn) {
