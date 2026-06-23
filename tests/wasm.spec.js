@@ -183,6 +183,85 @@ test("mobile quiz and editor stay within the viewport", async ({ page }) => {
   expect(previewAfter.width).toBe(previewBox.width);
 });
 
+test("answered problem opens selected in management and can be edited", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => {
+    problems = [{
+      id: "editable-problem",
+      hand: "123456789m12344p",
+      answers: ["1m"],
+      primary_answer: "1m",
+      genre: "編集前",
+      note: "",
+      prompt_note: "",
+      melds: [],
+      settings: {
+        turn: 6,
+        round_wind: "1z",
+        seat_wind: "2z",
+        dora_indicators: [],
+        objective: 2,
+      },
+      simulator: {
+        turn: 6,
+        shanten: { all: 2 },
+        best_discards: ["1m"],
+        rows: [{
+          tile: "1m",
+          metric: 1000,
+          expected_score: 1000,
+          win_probability: 0.2,
+          tenpai_probability: 0.6,
+          ukeire: 20,
+          necessary_tiles: [],
+          shanten: 2,
+        }],
+      },
+    }];
+    currentQuizContext = { mode: "genre", genre: "編集前" };
+    currentProblem = problems[0];
+    renderQuestion(currentProblem, null);
+  });
+
+  await page.locator("#hand .tile[data-tile='1m']").click();
+  await expect(page.locator("#edit-current-problem")).toBeVisible();
+  await page.locator("#edit-current-problem").click();
+  await expect(page.locator("#manage-view")).toBeVisible();
+  await expect(page.locator(".problem-select[value='editable-problem']")).toBeChecked();
+  await expect(page.locator("tr[data-id='editable-problem']")).toHaveClass(/selected-problem-row/);
+  await expect(page.locator("#preview-hand-input")).toHaveValue("123456789m12344p");
+  await expect(page.locator("#preview-answer-input")).toHaveValue("1m");
+
+  await page.evaluate(() => {
+    window.analyzeWithWasm = async () => ({
+      version: "edit-test",
+      turn: 6,
+      shanten: { all: 2 },
+      best_discards: ["2m"],
+      rows: [{
+        tile: "2m",
+        metric: 1200,
+        expected_score: 1200,
+        win_probability: 0.22,
+        tenpai_probability: 0.64,
+        ukeire: 22,
+        necessary_tiles: [],
+        shanten: 2,
+      }],
+    });
+  });
+  await page.locator("#preview-genre").fill("編集後");
+  await page.locator("#preview-hand-input").fill("223456789m12344p");
+  await page.locator("#preview-answer-input").fill("2m");
+  await page.locator("#save-preview-problem").click();
+  await expect(page.locator("#preview-edit-message")).toContainText("変更を保存しました");
+  const edited = await page.evaluate(() => problems[0]);
+  expect(edited.hand).toBe("223456789m12344p");
+  expect(edited.answers).toEqual(["2m"]);
+  expect(edited.genre).toBe("編集後");
+  expect(edited.simulator.version).toBe("edit-test");
+});
+
 test("similar-problem transforms run in the browser", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => {

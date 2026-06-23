@@ -112,7 +112,7 @@ button.danger { color: var(--red); }
 .result { max-width: 680px; margin: 28px auto 0; padding: 16px; border-radius: 12px; text-align: left; }
 .result.correct { background: #e5f1eb; color: #164b39; }
 .result.wrong { background: #f7e5e2; color: #7e3029; }
-.continue-question { display: block; margin: 14px 0 0 auto; }
+.result-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 14px; }
 .simulator-result { width: 100%; min-width: 0; max-width: 100%; margin: 28px auto 0; text-align: left; border-top: 1px solid var(--line); padding-top: 24px; }
 .simulator-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 12px; }
 .simulator-heading h3 { margin-bottom: 0; }
@@ -209,10 +209,13 @@ button.danger { color: var(--red); }
 .management-table th, .management-table td { padding: 10px 12px; border-bottom: 1px solid #eee9df; text-align: left; }
 .management-table th { background: #edf3ef; font-size: 12px; color: #355348; }
 .management-table th:first-child, .management-table td:first-child { width: 42px; text-align: center; }
+.management-table tr.selected-problem-row td { background: #e5f1eb; }
 .problem-link { border: 0; padding: 0; color: var(--green); background: transparent; font-family: monospace; }
 .problem-preview { margin-top: 20px; border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: #fff; }
 .preview-hand { display: flex; align-items: end; flex-wrap: nowrap; gap: 3px; margin: 18px 0; overflow-x: auto; padding-bottom: 4px; }
 .preview-hand > img { width: 44px; }
+.problem-edit-form { display: grid; gap: 13px; margin: 18px 0; padding: 14px; border-radius: 12px; background: #faf8f3; }
+.problem-edit-form small { color: var(--muted); font-weight: 400; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
 code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
 

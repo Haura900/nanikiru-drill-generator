@@ -105,7 +105,8 @@ $config = Join-Path $vendor "data\config"
     -std=c++17 -O3 -fexceptions --bind `
     -sDISABLE_EXCEPTION_CATCHING=0 `
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createMahjongModule `
-    -sALLOW_MEMORY_GROWTH=1 "-sENVIRONMENT=web,worker,node" -sFILESYSTEM=1 `
+    -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=33554432 `
+    "-sENVIRONMENT=web,worker,node" -sFILESYSTEM=1 `
     "--preload-file" "$config\suits_patterns.json@/mahjong-data/suits_patterns.json" `
     "--preload-file" "$config\honors_patterns.json@/mahjong-data/honors_patterns.json" `
     "--preload-file" "$config\suits_table.bin@/mahjong-data/suits_table.bin" `

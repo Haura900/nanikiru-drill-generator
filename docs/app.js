@@ -13,12 +13,13 @@ let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
-const WASM_ASSET_VERSION = "20260623-1";
+const WASM_ASSET_VERSION = "20260623-2";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
+let selectedManagedProblemId = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -213,10 +214,12 @@ function renderQuestion(problem, state) {
 function answerQuestion(tile, clickedButton) {
   if (!currentProblem) return;
   const answers = currentProblem.answers || [currentProblem.primary_answer];
-  const correct = answers.includes(tile);
+  const correct = answers.some((answer) => samePhysicalTile(answer, tile));
   document.querySelectorAll(".tile").forEach((button) => {
     button.disabled = true;
-    if (answers.includes(button.dataset.tile)) button.classList.add("correct");
+    if (answers.some((answer) => samePhysicalTile(answer, button.dataset.tile))) {
+      button.classList.add("correct");
+    }
   });
   if (!correct) clickedButton.classList.add("wrong");
   const dueAt = recordAttempt(currentProblem, correct);
@@ -229,7 +232,11 @@ function answerQuestion(tile, clickedButton) {
   result.innerHTML = `<strong>${correct ? "正解" : "不正解"}</strong>
     <p>正解として設定された打牌: ${escapeHtml(answerText)} ／ ${escapeHtml(dueText)}</p>
     ${currentProblem.note ? `<p>${escapeHtml(currentProblem.note)}</p>` : ""}
-    <button id="continue-question" type="button" class="primary continue-question">次の問題</button>`;
+    <div class="result-actions">
+      <button id="edit-current-problem" type="button">問題編集</button>
+      <button id="continue-question" type="button" class="primary">次の問題</button>
+    </div>`;
+  $("edit-current-problem").addEventListener("click", () => openProblemInManager(currentProblem.id));
   $("continue-question").addEventListener("click", continueQuestion);
   renderSimulatorTable(
     $("quiz-simulator-result"),
@@ -508,6 +515,22 @@ function bindExport() {
   if (promptLaterBtn) promptLaterBtn.addEventListener("click", hideBackupPrompt);
 }
 
+function openProblemInManager(problemId) {
+  selectedManagedProblemId = problemId;
+  ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
+    .forEach((id) => {
+      const input = $(id);
+      if (input) input.value = "";
+    });
+  showView("manage");
+  previewProblem(problemId);
+  const checkbox = document.querySelector(`.problem-select[value="${CSS.escape(problemId)}"]`);
+  if (checkbox) checkbox.checked = true;
+  requestAnimationFrame(() => {
+    $("problem-preview")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 function todayKeyJst() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
@@ -558,7 +581,7 @@ async function saveCurrentProblem() {
 
 function manualProblemFromForm(verification = null) {
   const payload = adminPayload();
-  const answers = parseMpsz(payload.answers.replace(/[\s,、・/]+/g, ""));
+  const answers = parseAnswerTiles(payload.answers);
   const melds = parseMeldsClient(payload.melds);
   const handTiles = parseMpsz(payload.hand);
   const expectedTiles = 14 - melds.length * 3;
@@ -568,7 +591,7 @@ function manualProblemFromForm(verification = null) {
   if (handTiles.length !== expectedTiles) {
     throw new Error(`副露${melds.length}組では手牌を${expectedTiles}枚にしてください。`);
   }
-  if (answers.some((answer) => !handTiles.includes(answer))) {
+  if (answers.some((answer) => !handTiles.some((tile) => samePhysicalTile(tile, answer)))) {
     throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   }
   return {
@@ -625,9 +648,9 @@ async function runWasmVerification() {
   const expected = 14 - melds.length * 3;
   if (hand.length !== expected) throw new Error(`手牌は${expected}枚必要です。`);
   validateCombinedTileCounts(hand, melds);
-  const answers = [...new Set(parseMpsz(payload.answers.replace(/[\s,、・/]+/g, "")))];
+  const answers = parseAnswerTiles(payload.answers);
   if (!answers.length) throw new Error("指定解答を入力してください。");
-  if (answers.some((answer) => !hand.includes(answer))) {
+  if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
     throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   }
   const simulation = await analyzeWithWasm(payload.hand, melds, payload);
@@ -670,11 +693,12 @@ async function analyzeWithWasm(handText, melds, payload) {
 
 function calculateAnswerGaps(simulation, answers) {
   const best = simulation.rows[0]?.metric || 0;
-  const rows = Object.fromEntries(simulation.rows.map((row) => [row.tile, row]));
   const answerGaps = {};
   answers.forEach((answer) => {
-    if (!rows[answer]) throw new Error(`打牌候補にありません: ${answer}`);
-    answerGaps[answer] = Math.max(0, (best - rows[answer].metric) / Math.max(Math.abs(best), 1e-12) * 100);
+    const matchingRows = simulation.rows.filter((row) => samePhysicalTile(row.tile, answer));
+    if (!matchingRows.length) throw new Error(`打牌候補にありません: ${answer}`);
+    const answerMetric = Math.max(...matchingRows.map((row) => row.metric));
+    answerGaps[answer] = Math.max(0, (best - answerMetric) / Math.max(Math.abs(best), 1e-12) * 100);
   });
   return answerGaps;
 }
@@ -973,7 +997,9 @@ function renderGeneratedResults(items) {
     const best = rows[0];
     const answers = problem.answers || [];
     const answerSummary = answers.map((answer) => {
-      const row = rows.find((item) => item.tile === answer);
+      const row = rows
+        .filter((item) => samePhysicalTile(item.tile, answer))
+        .sort((a, b) => b.metric - a.metric)[0];
       const gap = Number(problem.answer_gaps?.[answer] || 0);
       return `${answer}: 期待値 ${formatNumber(row?.expected_score)} / 乖離 ${formatPercent(gap)}%`;
     }).join("<br>");
@@ -1045,8 +1071,9 @@ function renderAdminProblems() {
   }));
   managementRows.innerHTML = filteredManagementProblems.map((problem) => {
     const source = problems.find((item) => item.id === problem.source_id);
-    return `<tr data-id="${problem.id}">
-      <td><input class="problem-select" type="checkbox" value="${problem.id}"></td>
+    const selected = problem.id === selectedManagedProblemId;
+    return `<tr data-id="${problem.id}" class="${selected ? "selected-problem-row" : ""}">
+      <td><input class="problem-select" type="checkbox" value="${problem.id}" ${selected ? "checked" : ""}></td>
       <td><button class="problem-link" type="button" data-id="${problem.id}">${escapeHtml(problem.hand)}</button></td>
       <td>${escapeHtml(problem.genre || "未分類")}</td>
       <td>${formatDate(problem.created_at)}</td>
@@ -1054,7 +1081,11 @@ function renderAdminProblems() {
     </tr>`;
   }).join("") || `<tr><td colspan="5">登録済みの問題がありません。</td></tr>`;
   document.querySelectorAll(".problem-link").forEach((button) =>
-    button.addEventListener("click", () => previewProblem(button.dataset.id))
+    button.addEventListener("click", () => {
+      selectedManagedProblemId = button.dataset.id;
+      renderAdminProblems();
+      previewProblem(button.dataset.id);
+    })
   );
   document.querySelectorAll(".sort-th").forEach((button) => {
     const key = button.dataset.sort;
@@ -1171,33 +1202,118 @@ async function moveGenre(index, direction) {
 function previewProblem(problemId) {
   const problem = problems.find((item) => item.id === problemId);
   if (!problem) return;
+  selectedManagedProblemId = problemId;
   const preview = $("problem-preview");
   preview.classList.remove("hidden");
   preview.innerHTML = `
-    <div class="section-heading"><h3>${escapeHtml(problem.genre)}</h3><button id="close-preview">閉じる</button></div>
+    <div class="section-heading"><h3>問題編集</h3><button id="close-preview">閉じる</button></div>
     <div class="preview-hand">${parseMpsz(problem.hand).map(tileImage).join("")}${renderMelds(problem.melds || [])}</div>
-    <p>解答: ${(problem.answers || []).map(escapeHtml).join("・")} ／ 登録日: ${formatDate(problem.created_at)}</p>
+    <p>登録日: ${formatDate(problem.created_at)}</p>
     <p>加工元: ${problem.source_id ? escapeHtml(problems.find((item) => item.id === problem.source_id)?.hand || "不明") : "元問題"}</p>
-    <div class="metadata-editor">
+    <div class="problem-edit-form">
+      <label>ジャンル<input id="preview-genre" value="${escapeHtml(problem.genre || "")}"></label>
+      <label>手牌（mpsz形式）
+        <input id="preview-hand-input" value="${escapeHtml(problem.hand || "")}">
+        <small>例: 123456m789p12344s。赤牌は0m・0p・0sです。</small>
+      </label>
+      <label>指定解答（複数可）
+        <input id="preview-answer-input" value="${escapeHtml((problem.answers || []).join(","))}">
+        <small>例: 8p,9p</small>
+      </label>
       <label>解説・メモ<textarea id="preview-note" rows="3">${escapeHtml(problem.note || "")}</textarea></label>
       <label>出題時補足<textarea id="preview-prompt-note" rows="2">${escapeHtml(problem.prompt_note || "")}</textarea></label>
-      <button id="save-preview-metadata" type="button" class="primary">メモを保存</button>
+      <div class="button-row">
+        <button id="save-preview-problem" type="button" class="primary">変更を保存</button>
+        <button id="delete-preview-problem" type="button" class="danger">この問題を削除</button>
+      </div>
+      <div id="preview-edit-message" class="message"></div>
     </div>
     <div id="preview-simulator"></div>`;
-  $("close-preview").addEventListener("click", () => preview.classList.add("hidden"));
-  $("save-preview-metadata").addEventListener("click", () => saveProblemMetadata(problem));
+  $("close-preview").addEventListener("click", () => {
+    selectedManagedProblemId = null;
+    preview.classList.add("hidden");
+    renderAdminProblems();
+  });
+  $("save-preview-problem").addEventListener("click", () => saveEditedProblem(problem));
+  $("delete-preview-problem").addEventListener("click", () => deleteEditedProblem(problem));
   renderSimulatorTable($("preview-simulator"), problem.simulator, problem.answers || [], null);
 }
 
-async function saveProblemMetadata(problem) {
-  const note = $("preview-note").value;
-  const promptNote = $("preview-prompt-note").value;
-  problem.note = note.trim();
-  problem.prompt_note = promptNote.trim();
+function problemPayload(problem) {
+  const settings = problem.settings || {};
+  return {
+    turn: Number(settings.turn || problem.simulator?.turn || 6),
+    round_wind: settings.round_wind || "1z",
+    seat_wind: settings.seat_wind || "2z",
+    dora: tilesToMpszClient(settings.dora_indicators || []),
+    tolerance_percent: Number(problem.tolerance_percent || 0),
+    objective: Number(settings.objective || 2),
+  };
+}
+
+async function saveEditedProblem(problem) {
+  const message = $("preview-edit-message");
+  try {
+    message.className = "message busy";
+    message.textContent = "シミュレーターで変更内容を確認しています。";
+    const handText = $("preview-hand-input").value.replace(/\s+/g, "");
+    const hand = parseMpsz(handText);
+    const melds = problem.melds || [];
+    const expectedTiles = 14 - melds.length * 3;
+    if (hand.length !== expectedTiles) {
+      throw new Error(`副露${melds.length}組では手牌を${expectedTiles}枚にしてください。`);
+    }
+    validateCombinedTileCounts(hand, melds);
+    const answers = parseAnswerTiles($("preview-answer-input").value);
+    if (!answers.length) throw new Error("指定解答を入力してください。");
+    if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
+      throw new Error("指定解答は手牌に含まれる牌を指定してください。");
+    }
+    const candidate = {
+      ...problem,
+      hand: tilesToMpszClient(hand),
+      answers,
+      primary_answer: answers[0],
+      genre: $("preview-genre").value.trim() || "未分類",
+    };
+    const duplicate = problems.find(
+      (item) => item.id !== problem.id && canonicalProblemKey(item) === canonicalProblemKey(candidate)
+    );
+    if (duplicate) throw new Error("同じ手牌と副露の問題はすでに登録されています。");
+    const payload = problemPayload(candidate);
+    const simulation = await analyzeWithWasm(candidate.hand, melds, payload);
+    const answerGaps = calculateAnswerGaps(simulation, answers);
+    Object.assign(problem, candidate, {
+      note: $("preview-note").value.trim(),
+      prompt_note: $("preview-prompt-note").value.trim(),
+      simulator: simulation,
+      answer_gaps: answerGaps,
+      unverified: false,
+    });
+    await saveProblems();
+    refreshGenres();
+    renderAdminProblems();
+    previewProblem(problem.id);
+    const savedMessage = $("preview-edit-message");
+    savedMessage.className = "message ok";
+    savedMessage.textContent = "変更を保存しました。";
+  } catch (error) {
+    message.className = "message error";
+    message.textContent = error.message;
+  }
+}
+
+async function deleteEditedProblem(problem) {
+  if (!confirm("この問題を削除しますか？")) return;
+  problems = problems.filter((item) => item.id !== problem.id);
+  const history = loadHistory();
+  delete history[problem.id];
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  selectedManagedProblemId = null;
   await saveProblems();
+  $("problem-preview").classList.add("hidden");
   renderAdminProblems();
-  setAdminMessage("問題のメモを更新しました。", "ok");
-  previewProblem(problem.id);
+  refreshGenres();
 }
 
 async function dumpProblems() {
@@ -1673,8 +1789,8 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
           ${rows.map((row, index) => {
             const classes = [
               index === 0 ? "best-row" : "",
-              acceptedAnswers.includes(row.tile) ? "accepted-row" : "",
-              selectedTile === row.tile ? "selected-row" : "",
+              acceptedAnswers.some((answer) => samePhysicalTile(answer, row.tile)) ? "accepted-row" : "",
+              selectedTile && samePhysicalTile(selectedTile, row.tile) ? "selected-row" : "",
             ].filter(Boolean).join(" ");
             const relative = best ? row.metric / best * 100 : 0;
             return `<tr class="${classes}">
@@ -1747,6 +1863,13 @@ function parseMpsz(text) {
     }
   }
   return output;
+}
+
+function parseAnswerTiles(text) {
+  return [...new Set(
+    parseMpsz(String(text || "").replace(/[\s,、・/]+/g, ""))
+      .map(normalizePhysicalTile)
+  )];
 }
 
 function tileRank(tile) {
