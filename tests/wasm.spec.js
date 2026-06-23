@@ -59,6 +59,46 @@ test("problem editor defaults to graphical tile input", async ({ page }) => {
   expect(await page.evaluate(() => toleranceInputValue(0.00001))).toBe("0.0001");
 });
 
+test("red fives can be entered and keep their identity", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => showView("create"));
+
+  const manzuButtons = page.locator("#hand-picker .picker-tile[data-tile$='m']");
+  await expect(manzuButtons).toHaveCount(10);
+  await expect(manzuButtons.nth(8)).toHaveAttribute("data-tile", "9m");
+  await expect(manzuButtons.nth(9)).toHaveAttribute("data-tile", "0m");
+  await expect(page.locator("#answer-picker .picker-tile[data-tile^='0']")).toHaveCount(0);
+
+  await page.locator("#hand-picker .picker-tile[data-tile='5m']").click();
+  await page.locator("#hand-picker .picker-tile[data-tile='0m']").click();
+  await page.locator("#hand-picker .picker-tile[data-tile='0m']").click();
+  await expect(page.locator("#admin-hand")).toHaveValue("50m");
+  await expect(page.locator("#hand-preview img").nth(0)).toHaveAttribute("alt", "5m");
+  await expect(page.locator("#hand-preview img").nth(1)).toHaveAttribute("alt", "0m");
+  await expect(page.locator("#hand-preview img").nth(1)).toHaveAttribute("src", /aka3-66-90-s\.png$/);
+
+  const values = await page.evaluate(() => ({
+    parsed: parseMpsz("50m"),
+    serialized: tilesToMpszClient(["0m", "5m", "6m"]),
+    redIndex: tileIndex("0m"),
+    normalIndex: tileIndex("5m"),
+  }));
+  expect(values.parsed).toEqual(["5m", "0m"]);
+  expect(values.serialized).toBe("506m");
+  expect(values.redIndex).toBe(34);
+  expect(values.normalIndex).toBe(4);
+
+  const duplicateError = await page.evaluate(() => {
+    try {
+      validateCombinedTileCounts(parseMpsz("00m"), []);
+      return "";
+    } catch (error) {
+      return error.message;
+    }
+  });
+  expect(duplicateError).toContain("赤牌は各種類1枚まで");
+});
+
 test("mobile quiz and editor stay within the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto("http://127.0.0.1:18765/");

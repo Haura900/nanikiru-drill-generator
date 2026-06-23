@@ -196,7 +196,7 @@ function renderQuestion(problem, state) {
   $("skip-review-question").classList.toggle("hidden", currentQuizContext?.mode !== "review");
   $("hand").innerHTML = `<div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
     <button class="tile" data-tile="${tile}" title="${tile}">
-      <img src="assets/tiles/${assetName(tile)}" alt="${tile}">
+      ${tileImage(tile)}
     </button>
   `).join("")}</div>${renderMelds(problem.melds || [])}`;
   document.querySelectorAll(".tile").forEach((button) => {
@@ -693,7 +693,8 @@ function summarizeWasmResult(raw, turn) {
     if (index < 9) return `${index + 1}m`;
     if (index < 18) return `${index - 8}p`;
     if (index < 27) return `${index - 17}s`;
-    return `${index - 26}z`;
+    if (index < 34) return `${index - 26}z`;
+    return `0${"mps"[index - 34]}`;
   };
   const at = (values) => Number(values?.[Math.min(Math.max(1, turn), values.length - 1)] || 0);
   const rows = (raw.stats || []).filter((stat) => stat.tile >= 0).map((stat) => ({
@@ -720,9 +721,9 @@ function summarizeWasmResult(raw, turn) {
 }
 
 function tileIndex(tile) {
-  const normalized = tile[0] === "0" ? `5${tile[1]}` : tile;
-  const rank = Number(normalized[0]) - 1;
-  return ({ m: 0, p: 9, s: 18, z: 27 })[normalized[1]] + rank;
+  if (tile[0] === "0") return ({ m: 34, p: 35, s: 36 })[tile[1]];
+  const rank = Number(tile[0]) - 1;
+  return ({ m: 0, p: 9, s: 18, z: 27 })[tile[1]] + rank;
 }
 
 function adminPayload() {
@@ -1108,9 +1109,7 @@ function previewProblem(problemId) {
   preview.classList.remove("hidden");
   preview.innerHTML = `
     <div class="section-heading"><h3>${escapeHtml(problem.genre)}</h3><button id="close-preview">閉じる</button></div>
-    <div class="preview-hand">${parseMpsz(problem.hand).map((tile) =>
-      `<img src="assets/tiles/${assetName(tile)}" alt="${tile}">`
-    ).join("")}${renderMelds(problem.melds || [])}</div>
+    <div class="preview-hand">${parseMpsz(problem.hand).map(tileImage).join("")}${renderMelds(problem.melds || [])}</div>
     <p>解答: ${(problem.answers || []).map(escapeHtml).join("・")} ／ 登録日: ${formatDate(problem.created_at)}</p>
     <p>加工元: ${problem.source_id ? escapeHtml(problems.find((item) => item.id === problem.source_id)?.hand || "不明") : "元問題"}</p>
     <div class="metadata-editor">
@@ -1242,9 +1241,9 @@ function downloadText(value, filename) {
 
 function buildTilePicker() {
   const tiles = [
-    ..."123456789".split("").map((rank) => `${rank}m`),
-    ..."123456789".split("").map((rank) => `${rank}p`),
-    ..."123456789".split("").map((rank) => `${rank}s`),
+    ..."1234567890".split("").map((rank) => `${rank}m`),
+    ..."1234567890".split("").map((rank) => `${rank}p`),
+    ..."1234567890".split("").map((rank) => `${rank}s`),
     ..."1234567".split("").map((rank) => `${rank}z`),
   ];
   [
@@ -1254,11 +1253,14 @@ function buildTilePicker() {
     { name: "answer", input: "admin-answer", max: 14 },
   ].forEach((config) => {
     const target = $(`${config.name}-picker`);
+    const selectableTiles = config.name === "answer"
+      ? tiles.filter((tile) => tile[0] !== "0")
+      : tiles;
     target.innerHTML = `<div class="tile-picker-actions">
       <button type="button" data-action="back">1枚戻す</button>
       <button type="button" data-action="clear">クリア</button>
-    </div>${tiles.map((tile) => `<button type="button" class="picker-tile" data-tile="${tile}">
-      <img src="assets/tiles/${assetName(tile)}" alt="${tile}">
+    </div>${selectableTiles.map((tile) => `<button type="button" class="picker-tile" data-tile="${tile}">
+      ${tileImage(tile)}
     </button>`).join("")}`;
     target.querySelectorAll(".picker-tile").forEach((button) =>
       button.addEventListener("click", () => addGuiTile(config, button.dataset.tile))
@@ -1271,6 +1273,13 @@ function buildTilePicker() {
 
 function addGuiTile(config, tile) {
   if (config.name === "meld") {
+    if (tile[0] === "0") {
+      const existingRedTiles = [
+        ...parseMeldsClient($("admin-melds").value).flatMap((meld) => meld.tiles),
+        ...pendingMeldTiles,
+      ];
+      if (existingRedTiles.includes(tile)) return;
+    }
     if (pendingMeldTiles.length >= 3) pendingMeldTiles = [];
     pendingMeldTiles.push(tile);
     if (pendingMeldTiles.length === 3) {
@@ -1291,7 +1300,8 @@ function addGuiTile(config, tile) {
   const values = parseMpsz($(config.input).value);
   if (values.length >= config.max) return;
   if (config.name === "answer" && values.includes(tile)) return;
-  if (values.filter((value) => value === tile).length >= 4) return;
+  if (tile[0] === "0" && values.includes(tile)) return;
+  if (values.filter((value) => samePhysicalTile(value, tile)).length >= 4) return;
   values.push(tile);
   $(config.input).value = tilesToMpszClient(values);
   renderAllInputPreviews();
@@ -1357,12 +1367,15 @@ function renderTileInputPreview(id, inputId, tiles, emptyText, slotCount = 0) {
 }
 
 function tileImage(tile) {
-  return `<img src="assets/tiles/${assetName(tile)}" alt="${tile}">`;
+  return `<img class="tile-face" src="assets/tiles/${assetName(tile)}" alt="${tile}">`;
 }
 
 function tilesToMpszClient(tiles) {
   return "mpsz".split("").map((suit) => {
-    const ranks = tiles.filter((tile) => tile[1] === suit).map((tile) => tile[0]).sort();
+    const ranks = tiles
+      .filter((tile) => tile[1] === suit)
+      .map((tile) => tile[0])
+      .sort((a, b) => tileRank(`${a}${suit}`) - tileRank(`${b}${suit}`) || Number(a === "0") - Number(b === "0"));
     return ranks.length ? `${ranks.join("")}${suit}` : "";
   }).join("");
 }
@@ -1375,9 +1388,9 @@ function splitBlocksClient(hand) {
     const suited = tiles.filter((tile) => tile[1] === suit);
     if (!suited.length) continue;
     let current = [suited[0]];
-    let previous = Number(suited[0][0]);
+    let previous = tileRank(suited[0]);
     suited.slice(1).forEach((tile) => {
-      const rank = Number(tile[0]);
+      const rank = tileRank(tile);
       if (rank - previous <= 2) current.push(tile);
       else {
         blocks.push(makeBlock(index++, suit, current));
@@ -1394,7 +1407,7 @@ function splitBlocksClient(hand) {
 }
 
 function makeBlock(index, suit, tiles) {
-  const ranks = tiles.map((tile) => Number(tile[0]));
+  const ranks = tiles.map(tileRank);
   let slideOptions = [0];
   if (suit !== "z" && !ranks.includes(1) && !ranks.includes(9)) {
     slideOptions = [];
@@ -1450,14 +1463,15 @@ function transformProblem(hand, answers, melds, spec) {
     const delta = Number(spec.slides[block.index] || 0);
     if (!block.slideOptions.includes(delta)) throw new Error("許可されないスライドです");
     block.tiles.forEach((tile) => {
-      let rank = Number(tile[0]);
+      const wasRed = tile[0] === "0";
+      let rank = tileRank(tile);
       let suit = tile[1];
       if (suit !== "z") {
         rank += delta;
         if (spec.reverse) rank = 10 - rank;
         suit = spec.suit_map[suit];
       }
-      const converted = `${rank}${suit}`;
+      const converted = `${wasRed && rank === 5 ? 0 : rank}${suit}`;
       output.push(converted);
       convertedByTile[tile] = converted;
     });
@@ -1470,13 +1484,14 @@ function transformProblem(hand, answers, melds, spec) {
   if (transformedAnswers.some((answer) => !answer)) throw new Error("解答牌を変換できません");
   const transformedMelds = melds.map((meld) => {
     const tiles = meld.tiles.map((tile) => {
-      let rank = Number(tile[0]);
+      const wasRed = tile[0] === "0";
+      let rank = tileRank(tile);
       let suit = tile[1];
       if (suit !== "z") {
         if (spec.reverse) rank = 10 - rank;
         suit = spec.suit_map[suit];
       }
-      return `${rank}${suit}`;
+      return `${wasRed && rank === 5 ? 0 : rank}${suit}`;
     });
     const mpsz = tilesToMpszClient(tiles);
     return { type: meld.type, name: meld.type === 0 ? "ポン" : "チー", tiles: parseMpsz(mpsz), mpsz };
@@ -1489,17 +1504,25 @@ function transformProblem(hand, answers, melds, spec) {
 }
 
 function validateCombinedTileCounts(hand, melds) {
-  const counts = countTiles([
+  const allTiles = [
     ...hand,
     ...melds.flatMap((meld) => meld.tiles || []),
-  ]);
+  ];
+  const duplicatedRedTiles = ["0m", "0p", "0s"].filter(
+    (redTile) => allTiles.filter((tile) => tile === redTile).length > 1
+  );
+  if (duplicatedRedTiles.length) {
+    throw new Error(`赤牌は各種類1枚までです: ${duplicatedRedTiles.join("・")}`);
+  }
+  const counts = countTiles(allTiles);
   const over = Object.entries(counts).filter(([, count]) => count > 4).map(([tile]) => tile);
   if (over.length) throw new Error(`手牌と副露を合わせて同じ牌が5枚以上あります: ${over.join("・")}`);
 }
 
 function countTiles(tiles) {
   return tiles.reduce((counts, tile) => {
-    counts[tile] = (counts[tile] || 0) + 1;
+    const normalized = normalizePhysicalTile(tile);
+    counts[normalized] = (counts[normalized] || 0) + 1;
     return counts;
   }, {});
 }
@@ -1540,8 +1563,8 @@ function parseMeldsClient(text) {
     if (match[1].length % 3) throw new Error("副露1組は3枚です。");
     for (let offset = 0; offset < match[1].length; offset += 3) {
       const tiles = match[1].slice(offset, offset + 3).split("").map((rank) => `${rank}${match[2]}`);
-      const ranks = tiles.map((tile) => Number(tile[0])).sort();
-      const pong = new Set(tiles).size === 1;
+      const ranks = tiles.map(tileRank).sort((a, b) => a - b);
+      const pong = new Set(tiles.map(normalizePhysicalTile)).size === 1;
       const chi = match[2] !== "z" && ranks[1] === ranks[0] + 1 && ranks[2] === ranks[1] + 1;
       if (!pong && !chi) throw new Error(`${tiles.join("")}はポン・チーの形ではありません。`);
       const type = pong ? 0 : 1;
@@ -1589,7 +1612,7 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
             ].filter(Boolean).join(" ");
             const relative = best ? row.metric / best * 100 : 0;
             return `<tr class="${classes}">
-              <td><span class="discard-cell"><img src="assets/tiles/${assetName(row.tile)}" alt="${row.tile}"><span><b>${row.tile}</b><small>${row.shanten}シャンテン</small></span></span></td>
+              <td><span class="discard-cell">${tileImage(row.tile)}<span><b>${row.tile}</b><small>${row.shanten}シャンテン</small></span></span></td>
               <td>${renderNecessaryTiles(row)}</td>
               <td>${formatProbability(row.tenpai_probability)}</td>
               <td>${formatProbability(row.win_probability)}</td>
@@ -1607,7 +1630,7 @@ function renderNecessaryTiles(row) {
   if (!row.necessary_tiles?.length) return `<span class="ukeire-only">受入 ${row.ukeire}枚</span>`;
   return `<span class="effective-tiles">${row.necessary_tiles.map((item) => `
     <span class="effective-tile">
-      <img src="assets/tiles/${assetName(item.tile)}" alt="${item.tile}">
+      ${tileImage(item.tile)}
       <small>${item.count}</small>
     </span>
   `).join("")}<b>計${row.ukeire}枚</b></span>`;
@@ -1619,7 +1642,7 @@ function renderMelds(melds) {
     <div class="meld" title="${escapeHtml(meld.name || (meld.type === 0 ? "ポン" : "チー"))}">
       ${(meld.tiles || []).map((tile, index) => `
         <span class="meld-tile ${index === 0 ? "sideways" : ""}">
-          <img src="assets/tiles/${assetName(tile)}" alt="${tile}">
+          ${tileImage(tile)}
         </span>
       `).join("")}
     </div>
@@ -1653,14 +1676,29 @@ function parseMpsz(text) {
   for (const char of text) {
     if (/\d/.test(char)) digits.push(char);
     else if ("mpsz".includes(char)) {
-      output.push(...digits.map((digit) => `${digit === "0" ? "5" : digit}${char}`));
+      output.push(...digits.map((digit) => `${digit}${char}`));
       digits = [];
     }
   }
   return output;
 }
 
+function tileRank(tile) {
+  return tile[0] === "0" ? 5 : Number(tile[0]);
+}
+
+function normalizePhysicalTile(tile) {
+  return tile[0] === "0" ? `5${tile[1]}` : tile;
+}
+
+function samePhysicalTile(left, right) {
+  return normalizePhysicalTile(left) === normalizePhysicalTile(right);
+}
+
 function assetName(tile) {
+  if (tile[0] === "0") {
+    return ({ m: "aka3", p: "aka1", s: "aka2" })[tile[1]] + "-66-90-s.png";
+  }
   const prefixes = { m: "man", p: "pin", s: "sou", z: "ji" };
   return `${prefixes[tile[1]]}${tile[0]}-66-90-s.png`;
 }
