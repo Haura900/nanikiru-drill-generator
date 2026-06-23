@@ -59,6 +59,59 @@ test("problem editor defaults to graphical tile input", async ({ page }) => {
   expect(await page.evaluate(() => toleranceInputValue(0.00001))).toBe("0.0001");
 });
 
+test("mobile quiz and editor stay within the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => {
+    problems = Array.from({ length: 3 }, (_, index) => ({
+      id: `mobile-${index}`,
+      hand: "123456789m12344p",
+      answers: ["1m"],
+      primary_answer: "1m",
+      genre: `スマホ表示確認用の長いジャンル名${index + 1}`,
+      simulator: {
+        best_discards: ["1m"],
+        rows: Array.from({ length: 3 }, (_, rowIndex) => ({
+          tile: `${rowIndex + 1}m`,
+          metric: 1000 - rowIndex * 100,
+          expected_score: 1000 - rowIndex * 100,
+          win_probability: 0.2,
+          tenpai_probability: 0.6,
+          ukeire: 20,
+          necessary_tiles: [],
+          shanten: 2,
+        })),
+      },
+    }));
+    refreshGenres();
+  });
+
+  const genreTable = page.locator(".genre-table");
+  await expect(genreTable).toBeVisible();
+  expect(await genreTable.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await expect(page.locator(".start-genre").first()).toBeInViewport();
+
+  await page.locator(".start-genre").first().click();
+  const hand = page.locator("#hand");
+  expect(await hand.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  expect(await page.locator("#hand .tile").first().evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(30);
+
+  await page.locator("#hand .tile").first().click();
+  const simulatorWrap = page.locator("#quiz-simulator-result .sim-table-wrap");
+  await expect(simulatorWrap).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  expect(await simulatorWrap.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+
+  await page.evaluate(() => showView("create"));
+  await expect(page.locator("#hand-preview .preview-tile-slot")).toHaveCount(14);
+  const previewBox = await page.locator("#hand-preview").boundingBox();
+  await page.locator("#hand-picker .picker-tile[data-tile='1m']").click();
+  await expect(page.locator("#hand-preview .preview-tile-slot")).toHaveCount(13);
+  const previewAfter = await page.locator("#hand-preview").boundingBox();
+  expect(previewAfter.height).toBe(previewBox.height);
+  expect(previewAfter.width).toBe(previewBox.width);
+});
+
 test("similar-problem transforms run in the browser", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => {

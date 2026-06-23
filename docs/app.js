@@ -1320,7 +1320,7 @@ function clearGuiTiles(config) {
 }
 
 function renderAllInputPreviews() {
-  renderTileInputPreview("hand-preview", "admin-hand", parseMpsz($("admin-hand").value), "手牌を選択してください");
+  renderTileInputPreview("hand-preview", "admin-hand", parseMpsz($("admin-hand").value), "手牌を選択してください", 14);
   renderTileInputPreview("dora-preview", "admin-dora", parseMpsz($("admin-dora").value), "ドラ表示牌なし");
   renderTileInputPreview("answer-preview", "admin-answer", parseMpsz($("admin-answer").value), "解答牌を選択してください");
   let melds = [];
@@ -1330,11 +1330,22 @@ function renderAllInputPreviews() {
     ${!melds.length && !pendingMeldTiles.length ? '<span class="empty-preview">副露なし</span>' : ""}`;
 }
 
-function renderTileInputPreview(id, inputId, tiles, emptyText) {
+function renderTileInputPreview(id, inputId, tiles, emptyText, slotCount = 0) {
   const target = $(id);
-  target.innerHTML = tiles.length
-    ? tiles.map((tile, index) => `<button type="button" class="preview-tile" data-index="${index}" title="${tile}を削除">${tileImage(tile)}</button>`).join("")
-    : `<span class="empty-preview">${emptyText}</span>`;
+  const tileButtons = tiles
+    .map((tile, index) => `<button type="button" class="preview-tile" data-index="${index}" title="${tile}を削除">${tileImage(tile)}</button>`)
+    .join("");
+  if (slotCount) {
+    const emptySlots = Array.from(
+      { length: Math.max(0, slotCount - tiles.length) },
+      () => '<span class="preview-tile-slot" aria-hidden="true"></span>'
+    ).join("");
+    target.classList.add("fixed-tile-slots");
+    target.innerHTML = `${tileButtons}${emptySlots}`;
+  } else {
+    target.classList.remove("fixed-tile-slots");
+    target.innerHTML = tiles.length ? tileButtons : `<span class="empty-preview">${emptyText}</span>`;
+  }
   target.querySelectorAll(".preview-tile").forEach((button) =>
     button.addEventListener("click", () => {
       const values = parseMpsz($(inputId).value);
