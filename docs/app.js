@@ -919,13 +919,13 @@ async function registerProblems(records) {
 async function generateWithWasm() {
   setAdminMessage("シミュレーターで類題候補を検証しています。", "busy");
   try {
+    const toleranceWasBlank = !String($("admin-tolerance").value || "").trim();
     const sourceVerification = await runWasmVerification();
-    if (!sourceVerification.is_accepted) {
-      throw new Error(
-        `元問題の指定解答には${formatPercent(sourceVerification.required_tolerance_percent)}%の許容乖離率が必要です。`
-      );
+    if (toleranceWasBlank) {
+      $("admin-tolerance").value = toleranceInputValue(sourceVerification.required_tolerance_percent);
     }
     const payload = adminPayload();
+    const canRegisterSource = sourceVerification.required_tolerance_percent <= payload.tolerance_percent + 1e-9;
     const sourceKey = canonicalProblemKey({
       hand: sourceVerification.hand,
       melds_text: sourceVerification.melds_text,
@@ -933,8 +933,14 @@ async function generateWithWasm() {
     let sourceProblem = problems.find((problem) => canonicalProblemKey(problem) === sourceKey);
     const pending = [];
     if (!sourceProblem) {
-      sourceProblem = manualProblemFromForm(sourceVerification);
-      pending.push(sourceProblem);
+      if (!canRegisterSource) {
+        const proceed = confirm("元問題はこの許容乖離率では登録できません。元問題を登録せずに類題生成を続けますか？");
+        if (!proceed) return;
+        sourceProblem = { id: null };
+      } else {
+        sourceProblem = manualProblemFromForm(sourceVerification);
+        pending.push(sourceProblem);
+      }
     }
     const requested = Math.max(1, Math.min(100, payload.count || 10));
     const specs = enumerateTransformSpecs(sourceVerification.hand);
@@ -1015,7 +1021,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
+      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。${sourceProblem.id ? "元問題も登録済みです。" : "元問題は未登録です。"}${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
