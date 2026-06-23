@@ -149,13 +149,13 @@
           </div>
           <div class="form-row">
             <label>許容乖離率（%）
-              <input id="admin-tolerance" type="number" min="0" step="0.0001" value="0">
+              <input id="admin-tolerance" type="number" min="0" step="0.0001" placeholder="空欄で自動設定">
+              <small id="tolerance-hint" class="field-hint"></small>
             </label>
             <label>類題作成数
               <input id="admin-count" type="number" min="1" max="100" value="10">
             </label>
           </div>
-          <p id="tolerance-hint" class="notice">空欄なら自動で検証して設定します。</p>
           <label>解説・メモ
             <textarea id="admin-note" rows="3"></textarea>
           </label>
@@ -296,6 +296,7 @@
           <li><strong>不正解直後の正解</strong>：1日後</li>
           <li><strong>それ以外の正解</strong>：(前回からの日数 × 3 + 1日) 後</li>
         </ul>
+        <p class="version-note">GitHub Pages版 v2026.06.23</p>
       </div>
     </section>
   </main>

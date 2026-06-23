@@ -488,6 +488,7 @@ function bindAdmin() {
   $("verify-button").addEventListener("click", verifyWithWasm);
   $("save-button").addEventListener("click", saveCurrentProblem);
   $("generate-button").addEventListener("click", generateWithWasm);
+  $("admin-tolerance").addEventListener("input", updateToleranceHint);
   ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
     .forEach((id) => $(id).addEventListener("input", renderAdminProblems));
   $("select-filtered-button").addEventListener("click", selectFilteredProblems);
@@ -499,6 +500,7 @@ function bindAdmin() {
       renderAllInputPreviews();
     })
   );
+  updateToleranceHint();
 }
 
 function bindExport() {
@@ -634,6 +636,7 @@ async function verifyWithWasm() {
   try {
     const verification = await runWasmVerification();
     $("admin-tolerance").value = toleranceInputValue(verification.required_tolerance_percent);
+    updateToleranceHint();
     renderVerification(verification);
     setAdminMessage(
       verification.is_optimal
@@ -923,6 +926,7 @@ async function generateWithWasm() {
     const sourceVerification = await runWasmVerification();
     if (toleranceWasBlank) {
       $("admin-tolerance").value = toleranceInputValue(sourceVerification.required_tolerance_percent);
+      updateToleranceHint();
     }
     const payload = adminPayload();
     const canRegisterSource = sourceVerification.required_tolerance_percent <= payload.tolerance_percent + 1e-9;
@@ -1583,11 +1587,19 @@ function renderAllInputPreviews() {
   renderTileInputPreview("hand-preview", "admin-hand", parseMpsz($("admin-hand").value), "手牌を選択してください", 14);
   renderTileInputPreview("dora-preview", "admin-dora", parseMpsz($("admin-dora").value), "ドラ表示牌なし");
   renderTileInputPreview("answer-preview", "admin-answer", parseMpsz($("admin-answer").value), "解答牌を選択してください");
+  updateToleranceHint();
   let melds = [];
   try { melds = parseMeldsClient($("admin-melds").value); } catch {}
   $("meld-preview").innerHTML = `${renderMelds(melds)}
     ${pendingMeldTiles.length ? `<div class="concealed-hand">${pendingMeldTiles.map(tileImage).join("")}</div>` : ""}
     ${!melds.length && !pendingMeldTiles.length ? '<span class="empty-preview">副露なし</span>' : ""}`;
+}
+
+function updateToleranceHint() {
+  const target = $("tolerance-hint");
+  if (!target) return;
+  const raw = String($("admin-tolerance")?.value || "").trim();
+  target.textContent = raw ? "" : "空欄なら自動で検証して設定します。";
 }
 
 function renderTileInputPreview(id, inputId, tiles, emptyText, slotCount = 0) {

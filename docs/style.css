@@ -31,6 +31,7 @@ h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-family: serif; font-size: clamp(30px, 4.2vw, 50px); letter-spacing: .03em; }
 h2 { font-family: serif; }
 .eyebrow { color: var(--green); font-size: 12px; font-weight: 800; letter-spacing: .08em; margin-bottom: 5px; }
+.version-note { margin-top: 6px; color: var(--muted); font-size: 12px; letter-spacing: .02em; }
 nav { display: flex; gap: 8px; }
 nav button { border: 0; background: transparent; padding: 10px 14px; border-bottom: 2px solid transparent; }
 nav button.active { border-color: var(--green); color: var(--green); font-weight: 700; }
@@ -169,6 +170,7 @@ button.danger { color: var(--red); }
 .problem-row code { display: block; font-size: 14px; margin: 4px 0; }
 .compact-label { min-width: 180px; }
 .notice { padding: 12px; border-radius: 10px; background: #fff5d9; color: #725414; margin-top: 14px; }
+.field-hint { display: block; min-height: 1.2em; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .file-button { display: inline-flex; width: auto; border: 1px solid var(--line); border-radius: 10px; background: white; padding: 10px 15px; color: var(--ink); cursor: pointer; }
 .file-button input { display: none; }
 .tile-picker { display: flex; flex-wrap: wrap; gap: 3px; padding: 10px; margin: 8px 0 16px; border: 1px solid var(--line); border-radius: 12px; background: #f8f5ed; }
