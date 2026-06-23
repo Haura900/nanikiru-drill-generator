@@ -1,0 +1,316 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>類題何切る量産ドリル</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">何切る問題を出題・復習し、類題を自動生成するドリル</p>
+      <h1>類題何切る量産ドリル</h1>
+    </div>
+    <nav id="nav" class="hidden">
+      <button data-view="quiz">出題</button>
+      <button data-view="stats">成績</button>
+      <button data-view="create">問題作成</button>
+      <button data-view="manage">問題管理</button>
+      <button data-view="export">データ</button>
+      <button data-view="about">概要</button>
+    </nav>
+  </header>
+
+  <main>
+
+    <section id="quiz-view" class="view hidden">
+      <div id="quiz-genre-selection" class="panel genre-selection">
+        <div class="section-heading">
+          <div>
+            <h2>出題したいジャンルを選んでください</h2>
+            <p class="description">復習問題がある場合は先に出題します。復習をスキップすると、ジャンル別出題が表示されます。</p>
+          </div>
+          <div class="review-action">
+            <span id="review-due-count">復習 0問</span>
+            <button id="review-question" type="button">復習問題を出題</button>
+          </div>
+        </div>
+        <div class="genre-table-wrap">
+          <table class="genre-table">
+            <thead>
+              <tr>
+                <th>ジャンル</th>
+                <th>残り問題数</th>
+                <th>正答率</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="genre-quiz-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <article id="question-card" class="panel question hidden">
+        <div class="question-meta">
+          <span id="question-genre" class="tag"></span>
+          <span id="question-status"></span>
+        </div>
+        <button id="skip-review-question" type="button" class="secondary hidden">復習をスキップしてジャンル出題へ</button>
+        <p id="question-prompt-note" class="notice hidden"></p>
+        <div id="hand" class="hand"></div>
+        <p class="hint">切る牌を選択してください</p>
+        <div id="answer-result" class="result hidden"></div>
+        <div id="quiz-simulator-result" class="simulator-result hidden"></div>
+      </article>
+      <div id="quiz-empty" class="panel hidden"></div>
+    </section>
+
+    <section id="stats-view" class="view hidden">
+      <div class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>ジャンル別成績</h2>
+          </div>
+          <button id="reset-history" class="danger">学習履歴を削除</button>
+        </div>
+        <div id="stats-summary" class="stats-list"></div>
+        <h3>全体正答率（直近300解答移動平均）</h3>
+        <canvas id="overall-chart" class="report-chart" width="1100" height="380"></canvas>
+        <div class="section-heading chart-heading">
+          <h3>ジャンル別正答率</h3>
+          <div id="genre-chart-filters" class="genre-checkboxes"></div>
+        </div>
+        <canvas id="genre-chart" class="report-chart" width="1100" height="420"></canvas>
+        <h3>日付別正答率</h3>
+        <canvas id="daily-chart" class="report-chart" width="1100" height="380"></canvas>
+      </div>
+    </section>
+
+    <section id="create-view" class="view hidden">
+      <div class="admin-grid">
+        <form id="problem-form" class="panel">
+        <div class="section-heading">
+          <h2>新しい問題を作成</h2>
+          <span id="create-problem-count" class="count">0問</span>
+          </div>
+          <label>ジャンル
+            <input id="admin-genre" list="genre-suggestions" autocomplete="off" required>
+            <datalist id="genre-suggestions"></datalist>
+          </label>
+          <fieldset class="tile-input-section">
+            <legend>手牌</legend>
+            <div id="hand-preview" class="input-tile-preview"></div>
+            <div id="hand-picker" class="tile-picker"></div>
+            <details><summary>mpsz形式で入力</summary>
+              <input id="admin-hand" required>
+            </details>
+          </fieldset>
+          <fieldset class="tile-input-section">
+            <legend>副露（任意・複数可）</legend>
+            <div id="meld-preview" class="input-tile-preview"></div>
+            <div id="meld-picker" class="tile-picker"></div>
+            <small>牌を3枚選ぶとポン・チーとして追加します。表示は横・縦・縦です。</small>
+            <details><summary>mpsz形式で入力</summary>
+              <input id="admin-melds" placeholder="例: 123m 777z">
+            </details>
+          </fieldset>
+          <fieldset class="tile-input-section">
+            <legend>ドラ表示牌（任意）</legend>
+            <div id="dora-preview" class="input-tile-preview"></div>
+            <div id="dora-picker" class="tile-picker"></div>
+            <details><summary>mpsz形式で入力</summary>
+              <input id="admin-dora">
+            </details>
+          </fieldset>
+          <fieldset class="tile-input-section">
+            <legend>指定解答（複数可）</legend>
+            <div id="answer-preview" class="input-tile-preview"></div>
+            <div id="answer-picker" class="tile-picker"></div>
+            <details><summary>mpsz形式で入力</summary>
+              <input id="admin-answer" placeholder="例: 89p または 8p,9p" required>
+            </details>
+          </fieldset>
+          <div class="form-row three">
+            <label>巡目
+              <input id="admin-turn" type="number" min="1" max="18" value="6">
+            </label>
+            <label>場風
+              <select id="admin-round-wind">
+                <option value="1z">東</option><option value="2z">南</option>
+                <option value="3z">西</option><option value="4z">北</option>
+              </select>
+            </label>
+            <label>自風
+              <select id="admin-seat-wind">
+                <option value="1z">東</option><option value="2z" selected>南</option>
+                <option value="3z">西</option><option value="4z">北</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row">
+            <label>許容乖離率（%）
+              <input id="admin-tolerance" type="number" min="0" step="0.0001" value="0">
+            </label>
+            <label>類題作成数
+              <input id="admin-count" type="number" min="1" max="100" value="10">
+            </label>
+          </div>
+          <label>解説・メモ
+            <textarea id="admin-note" rows="3"></textarea>
+          </label>
+          <label>出題時補足
+            <textarea id="admin-prompt-note" rows="2" placeholder="例: 出アガリ条件、点数状況など"></textarea>
+          </label>
+          <div class="button-row">
+            <button id="verify-button" type="button">元解答を検証</button>
+            <button id="save-button" type="button">元問題を登録</button>
+            <button id="generate-button" type="button" class="primary">類題を生成・登録</button>
+          </div>
+          <p id="pages-create-note" class="notice hidden">シミュレーターで検証・類題生成します。初回は計算データを読み込みます。</p>
+          <div id="admin-message" class="message"></div>
+          <div id="verification-result" class="verification-result"></div>
+          <div id="generated-results" class="generated-results hidden"></div>
+        </form>
+      </div>
+    </section>
+
+    <section id="manage-view" class="view hidden">
+      <div class="panel">
+        <div class="section-heading">
+          <div><h2>問題管理</h2></div>
+          <span id="manage-problem-count" class="count">0問</span>
+        </div>
+        <div class="management-filters">
+          <label>ジャンル<select id="manage-genre-filter"></select></label>
+          <label>登録日（開始）<input id="manage-date-from" type="date"></label>
+          <label>登録日（終了）<input id="manage-date-to" type="date"></label>
+          <label>加工元<select id="manage-source-filter"></select></label>
+          <label>検索<input id="manage-text-filter" placeholder="手牌・解答"></label>
+        </div>
+        <div class="button-row">
+          <button id="select-filtered-button" type="button">絞込結果を全選択</button>
+          <button id="bulk-delete-button" class="danger" type="button">選択を削除</button>
+          <input id="bulk-genre" placeholder="変更後ジャンル">
+          <button id="bulk-genre-button" type="button">選択のジャンル変更</button>
+        </div>
+        <div class="genre-order-editor">
+          <div class="section-heading">
+            <h3>ジャンルの表示順を変える</h3>
+            <small>ここで並び替えると、出題画面と成績画面のジャンル一覧の順番が変わります。</small>
+          </div>
+          <div id="genre-order-list"></div>
+        </div>
+        <div class="management-table-wrap">
+          <table class="management-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th><button type="button" class="sort-th" data-sort="hand">問題</button></th>
+                <th><button type="button" class="sort-th" data-sort="genre">ジャンル</button></th>
+                <th><button type="button" class="sort-th" data-sort="created_at">登録日</button></th>
+                <th><button type="button" class="sort-th" data-sort="source">加工元</button></th>
+              </tr>
+            </thead>
+            <tbody id="management-rows"></tbody>
+          </table>
+        </div>
+        <div id="problem-preview" class="problem-preview hidden"></div>
+      </div>
+    </section>
+
+    <section id="export-view" class="view hidden">
+      <div class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>データ出力</h2>
+            <p class="description">何切る問題・学習記録を出力・復元します。</p>
+          </div>
+        </div>
+        
+        <div style="margin-top: 24px;">
+          <h3>データの出力</h3>
+          <p>何切る問題・学習記録をまとめて出力します。</p>
+          <div class="button-row">
+            <button id="dump-button" type="button" class="primary">セーブデータダウンロード</button>
+            <button id="reset-all-data" type="button" class="danger">完全初期化</button>
+          </div>
+          <div id="export-message" class="message"></div>
+          <details style="margin-top: 16px;">
+            <summary>セーブデータをコピー</summary>
+            <textarea id="base64-output" readonly style="width: 100%; height: 200px; margin-top: 12px; font-family: monospace; font-size: 12px;"></textarea>
+            <button id="copy-base64" type="button" style="margin-top: 8px;">コピー</button>
+          </details>
+        </div>
+
+        <hr style="margin: 32px 0;">
+
+        <div>
+          <h3>データの復元</h3>
+          <p>前に出力したデータを復元できます。</p>
+          <div class="button-row">
+            <label class="file-button">ファイルを選択
+              <input id="restore-file" type="file" accept=".txt,.json">
+            </label>
+          </div>
+          <div id="restore-message" class="message"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="about-view" class="view hidden">
+      <div class="panel narrow-wide">
+        <h2>概要・使い方</h2>
+        
+        <h3>このアプリでできること</h3>
+        <p>麻雀の「何切る問題」を出題・復習しながら、元問題を元に類題を自動生成できるブラウザアプリです。</p>
+        
+        <h3>主な機能</h3>
+        <ul>
+          <li><strong>出題</strong>：ジャンル別に何切る問題を出題します</li>
+          <li><strong>復習</strong>：忘却曲線に基づいた間隔で復習問題を出題します</li>
+          <li><strong>類題自動生成</strong>：元問題を反転・置換・スライドして作った候補を、何切るシミュレーターで確認してから登録します</li>
+          <li><strong>成績管理</strong>：ジャンル別、日付別の成績を見やすく確認できます</li>
+          <li><strong>端末保存</strong>：作成した問題と学習記録は、この端末だけに保存されます</li>
+        </ul>
+
+        <h3>データについて</h3>
+        <p>作成した問題と学習記録はすべてこの端末に保存されます。外部へ送信されることはありません。</p>
+        <ul>
+          <li>同じブラウザでも、保存先が違うと見えません</li>
+          <li>ブラウザの保存領域を消すと失われます</li>
+          <li>定期的に「データ出力」からBase64を保存してください</li>
+        </ul>
+
+        <h3>使用しているツール・素材</h3>
+        <ul>
+          <li><strong>何切るシミュレーター</strong>：<a href="https://github.com/nekobean/mahjong-cpp" target="_blank" rel="noreferrer">mahjong-cpp</a></li>
+          <li><strong>牌画像</strong>：<a href="https://majandofu.com/mahjong-images" target="_blank" rel="noreferrer">麻雀牌画像素材</a></li>
+        </ul>
+
+        <h3>復習スケジュール</h3>
+        <p>出題時の正誤に基づいて、次回の復習日時を自動計算します。</p>
+        <ul>
+          <li><strong>初見正解</strong>：7日後</li>
+          <li><strong>不正解</strong>：即時</li>
+          <li><strong>不正解直後の正解</strong>：1日後</li>
+          <li><strong>それ以外の正解</strong>：(前回からの日数 × 3 + 1日) 後</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <div id="backup-prompt" class="backup-prompt hidden" role="dialog" aria-modal="true" aria-labelledby="backup-prompt-title">
+    <div class="backup-prompt-card">
+      <p class="eyebrow">バックアップ</p>
+      <h2 id="backup-prompt-title">セーブデータを残しておきますか？</h2>
+      <p class="description">データはこのブラウザに保存されています。ブラウザのデータ削除などに備えて、バックアップを保存できます。</p>
+      <div class="button-row">
+        <button id="backup-prompt-download" type="button" class="primary">バックアップを保存</button>
+        <button id="backup-prompt-later" type="button">あとで</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

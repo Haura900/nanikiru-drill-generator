@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+/data/
+vendor/mahjong-cpp/
+/tools/
+/wasm/build/
+/node_modules/
+/test-results/
