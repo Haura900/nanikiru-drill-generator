@@ -154,7 +154,7 @@ function renderGenreQuizTable() {
   const due = dueReviewProblems(history);
   $("review-due-count").textContent = `復習 ${due.length}問`;
   $("review-question").disabled = due.length === 0;
-  $("random-question").disabled = unseenProblems(history).length === 0;
+  $("random-question").disabled = problems.length === 0;
 }
 
 function startGenreQuestion(genre) {
@@ -170,9 +170,8 @@ function unseenProblems(history = loadHistory()) {
 }
 
 function startRandomQuestion() {
-  const pool = unseenProblems();
   currentQuizContext = { mode: "random" };
-  showQuestionFromPool(pool, false);
+  showQuestionFromPool(problems, false);
 }
 
 function dueReviewProblems(history = loadHistory()) {
