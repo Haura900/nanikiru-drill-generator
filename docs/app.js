@@ -20,6 +20,7 @@ const WASM_DEFAULT_FLAGS = Object.freeze({
   enable_shanten_down: true,
   enable_tegawari: true,
 });
+const APP_BUILD_VERSION = typeof window !== "undefined" ? window.NANIKIRU_BUILD_VERSION || "local" : "local";
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
@@ -37,6 +38,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindAdmin();
   bindExport();
   buildTilePicker();
+  renderBuildVersion();
   await loadProblems();
   document.getElementById("nav").classList.remove("hidden");
   showView("quiz");
@@ -82,6 +84,12 @@ function bindQuiz() {
     reviewSkippedThisSession = true;
     showGenreSelection();
   });
+}
+
+function renderBuildVersion() {
+  const target = $("build-version");
+  if (!target) return;
+  target.textContent = APP_BUILD_VERSION;
 }
 
 function showGenreSelection() {
@@ -217,6 +225,7 @@ function renderQuestion(problem, state) {
   $("question-genre").textContent = "";
   $("question-genre").classList.add("hidden");
   $("question-status").textContent = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
+  $("question-next-cta").classList.add("hidden");
   $("answer-result").className = "result hidden";
   $("answer-result").innerHTML = "";
   $("quiz-simulator-result").className = "simulator-result hidden";
@@ -228,15 +237,15 @@ function renderQuestion(problem, state) {
   const doraIndicators = problem.settings?.dora_indicators || [];
   const doraHtml = doraIndicators.length
     ? `<div class="question-dora"><span>ドラ表示牌</span><div class="concealed-hand">${doraIndicators.map((tile) => `
-        <span class="tile">${tileImage(tile)}</span>
+        <span class="dora-tile">${tileImage(tile)}</span>
       `).join("")}</div></div>`
-    : `<div class="question-dora empty">ドラ表示牌なし</div>`;
-  $("hand").innerHTML = `${doraHtml}<div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
+    : "";
+  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
     <button class="tile" data-tile="${tile}" title="${tile}">
       ${tileImage(tile)}
     </button>
   `).join("")}</div>${renderMelds(problem.melds || [])}`;
-  document.querySelectorAll(".tile").forEach((button) => {
+  $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
 }
@@ -245,7 +254,7 @@ function answerQuestion(tile, clickedButton) {
   if (!currentProblem) return;
   const answers = currentProblem.answers || [currentProblem.primary_answer];
   const correct = answers.some((answer) => samePhysicalTile(answer, tile));
-  document.querySelectorAll(".tile").forEach((button) => {
+  $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.disabled = true;
     if (answers.some((answer) => samePhysicalTile(answer, button.dataset.tile))) {
       button.classList.add("correct");
@@ -271,6 +280,8 @@ function answerQuestion(tile, clickedButton) {
     </div>`;
   $("edit-current-problem").addEventListener("click", () => openProblemInManager(currentProblem.id));
   $("continue-question").addEventListener("click", continueQuestion);
+  $("continue-question-inline").addEventListener("click", continueQuestion);
+  $("question-next-cta").classList.remove("hidden");
   renderSimulatorTable(
     $("quiz-simulator-result"),
     currentProblem.simulator,

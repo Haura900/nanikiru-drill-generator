@@ -90,11 +90,13 @@ button.danger { color: var(--red); }
 .question { text-align: center; min-height: 360px; }
 .question-meta { display: flex; justify-content: space-between; color: var(--muted); }
 .tag { display: inline-block; padding: 5px 10px; background: #e2eee8; color: var(--green); border-radius: 999px; font-size: 12px; font-weight: 800; }
-.question-dora { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.hand { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-width: 0; margin: 55px 0 22px; overflow: hidden; padding: 8px 0 4px; }
+.question-topline { display: flex; justify-content: flex-end; min-height: 28px; }
+.question-dora { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; font-weight: 700; }
 .question-dora .concealed-hand { gap: 2px; padding-bottom: 0; }
-.question-dora .tile { width: 30px; box-shadow: 0 2px 6px rgba(28, 24, 17, .14); }
+.question-dora .dora-tile { width: 30px; box-shadow: 0 2px 6px rgba(28, 24, 17, .14); pointer-events: none; }
+.question-dora .dora-tile img { display: block; width: 100%; height: auto; }
 .question-dora.empty { min-height: 34px; }
-.hand { display: flex; justify-content: center; align-items: end; flex-wrap: nowrap; gap: 14px; width: 100%; min-width: 0; margin: 55px 0 22px; overflow: hidden; padding: 8px 0 4px; }
 .concealed-hand { display: flex; align-items: end; flex-wrap: nowrap; justify-content: center; gap: 3px; min-width: 0; max-width: 100%; padding-bottom: 4px; }
 .hand > .concealed-hand { flex: 1 1 auto; }
 .hand .concealed-hand .tile { flex: 1 1 0; min-width: 0; max-width: 58px; }
@@ -241,7 +243,8 @@ code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
   .admin-grid { grid-template-columns: 1fr; }
   .form-row, .form-row.three { grid-template-columns: 1fr; }
   .question { padding-inline: 10px; }
-  .hand { gap: 4px; margin-top: 28px; overflow: hidden; }
+  .hand { gap: 6px; margin-top: 28px; overflow: hidden; }
+  .question-topline { min-height: 24px; }
   .hand .concealed-hand { gap: 1px; overflow: visible; }
   .hand .concealed-hand .tile {
     width: max(15px, calc((100vw - 72px) / 14));

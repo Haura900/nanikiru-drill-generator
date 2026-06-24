@@ -59,6 +59,9 @@
         <button id="skip-review-question" type="button" class="secondary hidden">復習をスキップしてジャンル出題へ</button>
         <p id="question-prompt-note" class="notice hidden"></p>
         <div id="hand" class="hand"></div>
+        <div id="question-next-cta" class="question-next-cta hidden">
+          <button id="continue-question-inline" type="button" class="primary">次の問題</button>
+        </div>
         <p class="hint">切る牌を選択してください</p>
         <div id="answer-result" class="result hidden"></div>
         <div id="quiz-simulator-result" class="simulator-result hidden"></div>
@@ -297,7 +300,7 @@
           <li><strong>不正解直後の正解</strong>：1日後</li>
           <li><strong>それ以外の正解</strong>：(前回からの日数 × 3 + 1日) 後</li>
         </ul>
-        <p class="version-note">GitHub Pages版 v2026.06.23</p>
+        <p class="version-note">GitHub Pages版 <span id="build-version">local</span></p>
       </div>
     </section>
   </main>
@@ -314,6 +317,7 @@
     </div>
   </div>
 
+  <script src="version.js"></script>
   <script src="app.js?v=20260623-2"></script>
 </body>
 </html>

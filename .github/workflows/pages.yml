@@ -22,6 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp build version
+        shell: bash
+        run: |
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          build_date="$(date -u +%Y.%m.%d)"
+          printf 'window.NANIKIRU_BUILD_VERSION = "v%s-%s";\n' "$build_date" "$short_sha" > docs/version.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
