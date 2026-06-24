@@ -74,6 +74,10 @@ function bindQuiz() {
     reviewSkippedThisSession = true;
     showReviewQuestion();
   });
+  $("random-question").addEventListener("click", () => {
+    reviewSkippedThisSession = true;
+    startRandomQuestion();
+  });
   $("skip-review-question").addEventListener("click", () => {
     reviewSkippedThisSession = true;
     showGenreSelection();
@@ -150,6 +154,7 @@ function renderGenreQuizTable() {
   const due = dueReviewProblems(history);
   $("review-due-count").textContent = `復習 ${due.length}問`;
   $("review-question").disabled = due.length === 0;
+  $("random-question").disabled = unseenProblems(history).length === 0;
 }
 
 function startGenreQuestion(genre) {
@@ -158,6 +163,16 @@ function startGenreQuestion(genre) {
   const unseen = matching.filter((problem) => !history[problem.id]?.attempts?.length);
   currentQuizContext = { mode: "genre", genre };
   showQuestionFromPool(unseen.length ? unseen : matching, false);
+}
+
+function unseenProblems(history = loadHistory()) {
+  return problems.filter((problem) => !history[problem.id]?.attempts?.length);
+}
+
+function startRandomQuestion() {
+  const pool = unseenProblems();
+  currentQuizContext = { mode: "random" };
+  showQuestionFromPool(pool, false);
 }
 
 function dueReviewProblems(history = loadHistory()) {
@@ -185,9 +200,11 @@ function showQuestionFromPool(pool, reviewMode) {
   if (!pool.length) {
     $("question-card").classList.add("hidden");
     $("quiz-empty").classList.remove("hidden");
-    $("quiz-empty").textContent = reviewMode
-      ? "現在、復習期限を迎えた問題はありません。"
-      : "このジャンルには問題がありません。";
+    $("quiz-empty").textContent = currentQuizContext?.mode === "random"
+      ? "未回答の問題がありません。"
+      : reviewMode
+        ? "現在、復習期限を迎えた問題はありません。"
+        : "このジャンルには問題がありません。";
     return;
   }
   currentProblem = pool[Math.floor(Math.random() * pool.length)];
@@ -198,7 +215,8 @@ function showQuestionFromPool(pool, reviewMode) {
 function renderQuestion(problem, state) {
   $("quiz-empty").classList.add("hidden");
   $("question-card").classList.remove("hidden");
-  $("question-genre").textContent = problem.genre || "未分類";
+  $("question-genre").textContent = "";
+  $("question-genre").classList.add("hidden");
   $("question-status").textContent = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
   $("answer-result").className = "result hidden";
   $("answer-result").innerHTML = "";
@@ -208,7 +226,13 @@ function renderQuestion(problem, state) {
   $("question-prompt-note").classList.toggle("hidden", !problem.prompt_note);
   $("skip-review-question").classList.toggle("hidden", currentQuizContext?.mode !== "review");
   $("skip-review-question").classList.toggle("hidden", currentQuizContext?.mode !== "review");
-  $("hand").innerHTML = `<div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
+  const doraIndicators = problem.settings?.dora_indicators || [];
+  const doraHtml = doraIndicators.length
+    ? `<div class="question-dora"><span>ドラ表示牌</span><div class="concealed-hand">${doraIndicators.map((tile) => `
+        <span class="tile">${tileImage(tile)}</span>
+      `).join("")}</div></div>`
+    : `<div class="question-dora empty">ドラ表示牌なし</div>`;
+  $("hand").innerHTML = `${doraHtml}<div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
     <button class="tile" data-tile="${tile}" title="${tile}">
       ${tileImage(tile)}
     </button>
@@ -236,7 +260,10 @@ function answerQuestion(tile, clickedButton) {
   const dueText = dueAt <= Date.now() + 1000
     ? "すぐに復習対象になります"
     : `次回: ${new Date(dueAt).toLocaleString("ja-JP")}`;
+  $("question-genre").textContent = currentProblem.genre || "未分類";
+  $("question-genre").classList.remove("hidden");
   result.innerHTML = `<strong>${correct ? "正解" : "不正解"}</strong>
+    <p>ジャンル: ${escapeHtml(currentProblem.genre || "未分類")}</p>
     <p>正解として設定された打牌: ${escapeHtml(answerText)} ／ ${escapeHtml(dueText)}</p>
     ${currentProblem.note ? `<p>${escapeHtml(currentProblem.note)}</p>` : ""}
     <div class="result-actions">
@@ -257,6 +284,8 @@ function answerQuestion(tile, clickedButton) {
 function continueQuestion() {
   if (currentQuizContext?.mode === "genre") {
     startGenreQuestion(currentQuizContext.genre);
+  } else if (currentQuizContext?.mode === "random") {
+    startRandomQuestion();
   } else if (currentQuizContext?.mode === "review") {
     startReviewQuestion();
   } else if (currentProblem) {
