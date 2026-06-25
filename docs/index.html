@@ -231,6 +231,25 @@
             <p class="description">何切る問題・学習記録を出力・復元します。</p>
           </div>
         </div>
+
+        <div class="review-settings">
+          <h3>復習の間隔</h3>
+          <p class="description">ここで復習の出題間隔を調整します。</p>
+          <div class="review-settings-grid">
+            <label>初見正解の間隔（日）
+              <input id="review-first-correct-days" type="number" min="0" step="1">
+            </label>
+            <label>不正解後の再出題（日）
+              <input id="review-wrong-retry-days" type="number" min="0" step="1">
+            </label>
+            <label>不正解直後に正解した後（日）
+              <input id="review-wrong-then-correct-days" type="number" min="0" step="1">
+            </label>
+            <label>復習の伸び率
+              <input id="review-repeat-multiplier" type="number" min="0" step="0.1">
+            </label>
+          </div>
+        </div>
         
         <div style="margin-top: 24px;">
           <h3>データの出力</h3>
@@ -251,7 +270,7 @@
 
         <div>
           <h3>データの復元</h3>
-          <p>前に出力したデータを復元できます。</p>
+          <p>前に出力したセーブデータを復元できます。</p>
           <div class="button-row">
             <label class="file-button">ファイルを選択
               <input id="restore-file" type="file" accept=".txt,.json">
@@ -293,12 +312,12 @@
         </ul>
 
         <h3>復習スケジュール</h3>
-        <p>出題時の正誤に基づいて、次回の復習日時を自動計算します。</p>
+        <p>出題時の正誤に基づいて、次回の復習日時を自動計算します。間隔はデータ画面から調整できます。</p>
         <ul>
-          <li><strong>初見正解</strong>：7日後</li>
-          <li><strong>不正解</strong>：即時</li>
-          <li><strong>不正解直後の正解</strong>：1日後</li>
-          <li><strong>それ以外の正解</strong>：(前回からの日数 × 3 + 1日) 後</li>
+          <li><strong>初見正解</strong>：設定した日数後</li>
+          <li><strong>不正解</strong>：設定した日数後</li>
+          <li><strong>不正解直後の正解</strong>：設定した日数後</li>
+          <li><strong>それ以外の正解</strong>：(前回からの日数 × 設定した係数 + 設定した日数) 後</li>
         </ul>
         <p class="version-note">GitHub Pages版 <span id="build-version">local</span></p>
       </div>

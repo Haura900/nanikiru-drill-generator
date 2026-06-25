@@ -2,6 +2,13 @@
 const HISTORY_KEY = "nanikiru-learning-v1";
 const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
+const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
+const DEFAULT_REVIEW_SETTINGS = Object.freeze({
+  first_correct_days: 7,
+  wrong_retry_days: 0,
+  wrong_then_correct_days: 1,
+  repeat_multiplier: 3,
+});
 let problems = [];
 let currentProblem = null;
 let currentView = "quiz";
@@ -38,6 +45,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindAdmin();
   bindExport();
   buildTilePicker();
+  renderReviewSettings();
   renderBuildVersion();
   await loadProblems();
   document.getElementById("nav").classList.remove("hidden");
@@ -240,11 +248,12 @@ function renderQuestion(problem, state) {
         <span class="dora-tile">${tileImage(tile)}</span>
       `).join("")}</div></div>`
     : "";
-  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
+  const meldHtml = renderMelds(problem.melds || []);
+  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
     <button class="tile" data-tile="${tile}" title="${tile}">
       ${tileImage(tile)}
     </button>
-  `).join("")}</div>${renderMelds(problem.melds || [])}`;
+  `).join("")}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
@@ -306,19 +315,20 @@ function continueQuestion() {
 
 function recordAttempt(problem, correct) {
   const history = loadHistory();
+  const reviewSettings = loadReviewSettings();
   const now = Date.now();
   const state = history[problem.id] || { attempts: [] };
   const previous = state.attempts[state.attempts.length - 1];
   let dueAt;
   if (!correct) {
-    dueAt = now;
+    dueAt = now + reviewSettings.wrong_retry_days * DAY;
   } else if (!previous) {
-    dueAt = now + 7 * DAY;
+    dueAt = now + reviewSettings.first_correct_days * DAY;
   } else if (!previous.correct) {
-    dueAt = now + DAY;
+    dueAt = now + reviewSettings.wrong_then_correct_days * DAY;
   } else {
     const elapsedDays = Math.max(0, (now - previous.at) / DAY);
-    dueAt = now + (elapsedDays * 3 + 1) * DAY;
+    dueAt = now + (elapsedDays * reviewSettings.repeat_multiplier + reviewSettings.wrong_then_correct_days) * DAY;
   }
   state.attempts.push({ at: now, correct, genre: problem.genre || "未分類" });
   state.dueAt = dueAt;
@@ -330,6 +340,50 @@ function recordAttempt(problem, correct) {
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}"); }
   catch { return {}; }
+}
+
+function loadReviewSettings() {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(REVIEW_SETTINGS_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+  return {
+    first_correct_days: sanitizeReviewSetting(stored.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
+    wrong_retry_days: sanitizeReviewSetting(stored.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
+    wrong_then_correct_days: sanitizeReviewSetting(stored.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
+    repeat_multiplier: sanitizeReviewSetting(stored.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+  };
+}
+
+function sanitizeReviewSetting(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
+
+function saveReviewSettings(settings) {
+  localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify({
+    first_correct_days: sanitizeReviewSetting(settings.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
+    wrong_retry_days: sanitizeReviewSetting(settings.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
+    wrong_then_correct_days: sanitizeReviewSetting(settings.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
+    repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+  }));
+}
+
+function renderReviewSettings() {
+  const settings = loadReviewSettings();
+  const bindings = {
+    "review-first-correct-days": settings.first_correct_days,
+    "review-wrong-retry-days": settings.wrong_retry_days,
+    "review-wrong-then-correct-days": settings.wrong_then_correct_days,
+    "review-repeat-multiplier": settings.repeat_multiplier,
+  };
+  Object.entries(bindings).forEach(([id, value]) => {
+    const input = $(id);
+    if (input) input.value = String(value);
+  });
 }
 
 function bindStats() {
@@ -554,6 +608,23 @@ function bindExport() {
   if (restoreInput) restoreInput.addEventListener("change", restoreDump);
   if (copyBtn) copyBtn.addEventListener("click", copyBase64);
   if (resetAllBtn) resetAllBtn.addEventListener("click", resetAllData);
+  [
+    "review-first-correct-days",
+    "review-wrong-retry-days",
+    "review-wrong-then-correct-days",
+    "review-repeat-multiplier",
+  ].forEach((id) => {
+    const input = $(id);
+    if (!input) return;
+    input.addEventListener("input", () => {
+      saveReviewSettings({
+        first_correct_days: $("review-first-correct-days").value,
+        wrong_retry_days: $("review-wrong-retry-days").value,
+        wrong_then_correct_days: $("review-wrong-then-correct-days").value,
+        repeat_multiplier: $("review-repeat-multiplier").value,
+      });
+    });
+  });
   if (promptDumpBtn) {
     promptDumpBtn.addEventListener("click", async () => {
       hideBackupPrompt();
@@ -1432,10 +1503,12 @@ async function dumpProblems() {
     const exportMsg = $("export-message");
     const base64Output = $("base64-output");
     const history = loadHistory();
+    const reviewSettings = loadReviewSettings();
     const data = {
-      v: 3,
+      v: 4,
       p: problems,
       h: history,
+      s: reviewSettings,
     };
     const sourceBytes = new TextEncoder().encode(JSON.stringify(data));
     const compressedBytes = await compressBytes(sourceBytes);
@@ -1469,7 +1542,15 @@ async function restoreDump(event) {
   try {
     const text = await file.text();
     const data = await decodeSaveData(text);
-    if (data?.v === 3 && Array.isArray(data.p)) {
+    if (data?.v === 4 && Array.isArray(data.p)) {
+      problems = data.p;
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(data.h || {}));
+      if (data.s && typeof data.s === "object") {
+        saveReviewSettings(data.s);
+      }
+      await saveProblems();
+      renderReviewSettings();
+    } else if (data?.v === 3 && Array.isArray(data.p)) {
       problems = data.p;
       localStorage.setItem(HISTORY_KEY, JSON.stringify(data.h || {}));
       await saveProblems();
@@ -1481,12 +1562,17 @@ async function restoreDump(event) {
       if (data.history) {
         localStorage.setItem(HISTORY_KEY, data.history);
       }
+      if (data.settings && typeof data.settings === "object") {
+        saveReviewSettings(data.settings);
+      }
       await saveProblems();
+      renderReviewSettings();
     } else if (data.localStorage && typeof data.localStorage === "object") {
       restoreLocalStorageSnapshot(data.localStorage);
       const stored = localStorage.getItem(PROBLEMS_KEY);
       problems = stored ? JSON.parse(stored) : [];
       await saveProblems();
+      renderReviewSettings();
     } else {
       throw new Error("復元できるデータではありません。");
     }
