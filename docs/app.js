@@ -233,6 +233,8 @@ function renderQuestion(problem, state) {
   $("question-genre").textContent = "";
   $("question-genre").classList.add("hidden");
   $("question-status").textContent = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
+  $("question-winds").innerHTML = renderQuestionWinds(problem.settings || {});
+  $("question-winds").classList.toggle("hidden", !$("question-winds").innerHTML);
   $("question-next-cta").classList.add("hidden");
   $("answer-result").className = "result hidden";
   $("answer-result").innerHTML = "";
@@ -316,6 +318,19 @@ function renderPostReviewInfo(currentProblemId) {
     .map(([genre, count]) => `${genre}:${count}問`)
     .join(" / ");
   return `後難問あり: ${remaining.length}問${summary ? ` (${summary})` : ""}`;
+}
+
+function renderQuestionWinds(settings) {
+  const roundWind = windLabel(settings.round_wind);
+  const seatWind = windLabel(settings.seat_wind);
+  const parts = [];
+  if (roundWind) parts.push(`場風: ${escapeHtml(roundWind)}`);
+  if (seatWind) parts.push(`自風: ${escapeHtml(seatWind)}`);
+  return parts.length ? parts.join(" / ") : "";
+}
+
+function windLabel(tile) {
+  return ({ "1z": "東", "2z": "南", "3z": "西", "4z": "北" })[tile] || "";
 }
 
 function continueQuestion() {
