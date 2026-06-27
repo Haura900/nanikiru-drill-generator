@@ -323,10 +323,14 @@ function renderPostReviewInfo(currentProblemId) {
 function renderQuestionWinds(settings) {
   const roundWind = windLabel(settings.round_wind);
   const seatWind = windLabel(settings.seat_wind);
-  const parts = [];
-  if (roundWind) parts.push(`場風: ${escapeHtml(roundWind)}`);
-  if (seatWind) parts.push(`自風: ${escapeHtml(seatWind)}`);
-  return parts.length ? parts.join(" / ") : "";
+  const items = [];
+  if (roundWind) {
+    items.push(`<span class="question-wind-item" title="場風">場風${tileImage(settings.round_wind)}</span>`);
+  }
+  if (seatWind) {
+    items.push(`<span class="question-wind-item" title="自風">自風${tileImage(settings.seat_wind)}</span>`);
+  }
+  return items.join("");
 }
 
 function windLabel(tile) {
