@@ -2013,11 +2013,13 @@ function enumerateTransformSpecs(hand, extraTiles = []) {
           const key = JSON.stringify([suitMap.m, suitMap.p, suitMap.s, reverse, slideState]);
           if (seen.has(key)) return;
           seen.add(key);
+          const spec = { suit_map: { ...suitMap }, reverse, slides: { ...slideState } };
+          if (!isBlockStructurePreserved(hand, spec)) return;
           const degree = ["m", "p", "s"].filter((suit) => suitMap[suit] !== suit).length
             + Number(reverse)
             + Object.values(slideState).filter((delta) => delta !== 0).length;
           if (!degree) return;
-          specs.push({ suit_map: { ...suitMap }, reverse, slides: { ...slideState }, degree });
+          specs.push({ ...spec, degree });
         });
       });
       return;
@@ -2031,6 +2033,26 @@ function enumerateTransformSpecs(hand, extraTiles = []) {
   };
   emitSlides(0);
   return specs;
+}
+
+function isBlockStructurePreserved(hand, spec) {
+  const originalBlocks = splitBlocksClient(hand);
+  const expected = originalBlocks.map((block) => {
+    const delta = Number(spec.slides[block.index] || 0);
+    if (!block.slideOptions.includes(delta)) return null;
+    return tilesToMpszClient(block.tiles.map((tile) => transformTileWithDelta(tile, spec, delta)));
+  });
+  if (expected.some((value) => !value)) return false;
+  const actualHand = originalBlocks.flatMap((block) => {
+    const delta = Number(spec.slides[block.index] || 0);
+    return block.tiles.map((tile) => transformTileWithDelta(tile, spec, delta));
+  });
+  const actual = splitBlocksClient(actualHand).map((block) => tilesToMpszClient(block.tiles));
+  return normalizedBlockSignature(expected) === normalizedBlockSignature(actual);
+}
+
+function normalizedBlockSignature(blocks) {
+  return [...blocks].sort().join("|");
 }
 
 function randomTransformSpecs(hand, limit = null, extraTiles = []) {
