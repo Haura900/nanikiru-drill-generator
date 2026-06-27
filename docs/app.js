@@ -178,7 +178,7 @@ function startGenreQuestion(genre) {
   const matching = problems.filter((problem) => (problem.genre || "未分類") === genre);
   const unseen = matching.filter((problem) => !history[problem.id]?.attempts?.length);
   currentQuizContext = { mode: "genre", genre };
-  showQuestionFromPool(unseen.length ? unseen : matching, false);
+  showQuestionFromPool(unseen, false);
 }
 
 function unseenProblems(history = loadHistory()) {
@@ -187,7 +187,7 @@ function unseenProblems(history = loadHistory()) {
 
 function startRandomQuestion() {
   currentQuizContext = { mode: "random" };
-  showQuestionFromPool(problems, false);
+  showQuestionFromPool(unseenProblems(), false);
 }
 
 function dueReviewProblems(history = loadHistory()) {
@@ -219,7 +219,7 @@ function showQuestionFromPool(pool, reviewMode) {
       ? "未回答の問題がありません。"
       : reviewMode
         ? "現在、復習期限を迎えた問題はありません。"
-        : "このジャンルには問題がありません。";
+        : "このジャンルには未回答の問題がありません。";
     return;
   }
   currentProblem = pool[Math.floor(Math.random() * pool.length)];
@@ -232,7 +232,7 @@ function renderQuestion(problem, state) {
   $("question-card").classList.remove("hidden");
   $("question-genre").textContent = "";
   $("question-genre").classList.add("hidden");
-  $("question-status").textContent = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
+  $("question-status").innerHTML = renderQuestionStatus(problem, state);
   $("question-winds").innerHTML = renderQuestionWinds(problem.settings || {});
   $("question-winds").classList.toggle("hidden", !$("question-winds").innerHTML);
   $("question-next-cta").classList.add("hidden");
@@ -259,6 +259,13 @@ function renderQuestion(problem, state) {
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
+}
+
+function renderQuestionStatus(problem, state) {
+  const attemptText = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
+  if (currentQuizContext?.mode !== "review") return escapeHtml(attemptText);
+  const remaining = Math.max(0, dueReviewProblems().filter((item) => item.id !== problem.id).length);
+  return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
 }
 
 function answerQuestion(tile, clickedButton) {
