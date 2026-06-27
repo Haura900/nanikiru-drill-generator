@@ -282,7 +282,7 @@ function answerQuestion(tile, clickedButton) {
   result.innerHTML = `<strong>${correct ? "正解" : "不正解"}</strong>
     <p>ジャンル: ${escapeHtml(currentProblem.genre || "未分類")}</p>
     <p>正解として設定された打牌: ${escapeHtml(answerText)} ／ ${escapeHtml(dueText)}</p>
-    ${currentProblem.note ? `<p>${escapeHtml(currentProblem.note)}</p>` : ""}
+    ${currentProblem.note ? `<p>${renderTextWithTiles(currentProblem.note)}</p>` : ""}
     <div class="result-actions">
       <button id="edit-current-problem" type="button">問題編集</button>
       <button id="continue-question" type="button" class="primary">次の問題</button>
@@ -1057,7 +1057,7 @@ async function generateWithWasm() {
       }
     }
     const requested = Math.max(1, Math.min(100, payload.count || 10));
-    const specs = enumerateTransformSpecs(sourceVerification.hand);
+    const specs = enumerateTransformSpecs(sourceVerification.hand, transformAuxiliaryTiles(payload));
     shuffleArray(specs);
     const seen = new Set(problems.map(canonicalProblemKey));
     seen.add(sourceKey);
@@ -1069,7 +1069,11 @@ async function generateWithWasm() {
           sourceVerification.hand,
           sourceVerification.answers,
           sourceVerification.melds,
-          spec
+          spec,
+          {
+            dora: payload.dora,
+            note: payload.note,
+          }
         );
         const key = canonicalProblemKey(transformed);
         if (seen.has(key)) {
@@ -1093,7 +1097,7 @@ async function generateWithWasm() {
         const simulation = await analyzeWithWasm(
           candidate.hand,
           candidate.melds,
-          payload
+          { ...payload, dora: candidate.dora }
         );
         if (simulation?.solver_mode?.degraded) fallbackUsed = true;
         const answerGaps = calculateAnswerGaps(simulation, candidate.answers);
@@ -1109,7 +1113,7 @@ async function generateWithWasm() {
           melds_text: candidate.melds.map((meld) => meld.mpsz).join(" "),
           genre: payload.genre.trim() || "未分類",
           genre_order: payload.genre_order,
-          note: payload.note.trim(),
+          note: candidate.note.trim(),
           prompt_note: payload.prompt_note.trim(),
           source_id: sourceProblem.id,
           transform: candidate.spec,
@@ -1118,7 +1122,7 @@ async function generateWithWasm() {
             turn: payload.turn,
             round_wind: payload.round_wind,
             seat_wind: payload.seat_wind,
-            dora_indicators: parseMpsz(payload.dora),
+            dora_indicators: parseMpsz(candidate.dora),
             objective: 2,
           },
           simulator: simulation,
@@ -1647,7 +1651,30 @@ function buildTilePicker() {
     target.querySelector('[data-action="back"]').addEventListener("click", () => removeGuiTile(config));
     target.querySelector('[data-action="clear"]').addEventListener("click", () => clearGuiTiles(config));
   });
+  buildTextTilePicker("note-picker", "admin-note", tiles);
   renderAllInputPreviews();
+}
+
+function buildTextTilePicker(pickerId, inputId, tiles) {
+  const target = $(pickerId);
+  if (!target) return;
+  target.innerHTML = tiles.map((tile) => `<button type="button" class="picker-tile" data-tile="${tile}">
+    ${tileImage(tile)}
+  </button>`).join("");
+  target.querySelectorAll(".picker-tile").forEach((button) =>
+    button.addEventListener("click", () => insertTileText(inputId, button.dataset.tile))
+  );
+}
+
+function insertTileText(inputId, tile) {
+  const input = $(inputId);
+  if (!input) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  input.value = `${input.value.slice(0, start)}${tile}${input.value.slice(end)}`;
+  const cursor = start + tile.length;
+  input.focus();
+  input.setSelectionRange(cursor, cursor);
 }
 
 function addGuiTile(config, tile) {
@@ -1757,6 +1784,14 @@ function tileImage(tile) {
   return `<img class="tile-face" src="assets/tiles/${assetName(tile)}" alt="${tile}">`;
 }
 
+function renderTextWithTiles(text) {
+  return escapeHtml(String(text || "")).replace(/[0-9]+[mpsz]/g, (match) => {
+    const tiles = parseMpsz(match);
+    if (!tiles.length) return match;
+    return `<span class="inline-tiles">${tiles.map(tileImage).join("")}</span>`;
+  });
+}
+
 function tilesToMpszClient(tiles) {
   return "mpsz".split("").map((suit) => {
     const ranks = tiles
@@ -1767,8 +1802,11 @@ function tilesToMpszClient(tiles) {
   }).join("");
 }
 
-function splitBlocksClient(hand) {
-  const tiles = Array.isArray(hand) ? parseMpsz(tilesToMpszClient(hand)) : parseMpsz(hand);
+function splitBlocksClient(hand, extraTiles = []) {
+  const tiles = [
+    ...(Array.isArray(hand) ? parseMpsz(tilesToMpszClient(hand)) : parseMpsz(hand)),
+    ...extraTiles,
+  ].sort(compareTilesForBlock);
   const blocks = [];
   let index = 0;
   for (const suit of "mps") {
@@ -1793,6 +1831,11 @@ function splitBlocksClient(hand) {
   return blocks;
 }
 
+function compareTilesForBlock(left, right) {
+  const suitOrder = { m: 0, p: 1, s: 2, z: 3 };
+  return suitOrder[left[1]] - suitOrder[right[1]] || tileRank(left) - tileRank(right);
+}
+
 function makeBlock(index, suit, tiles) {
   const ranks = tiles.map(tileRank);
   let slideOptions = [0];
@@ -1809,8 +1852,8 @@ function describeBlocksClient(hand) {
   return splitBlocksClient(hand).map((block) => tilesToMpszClient(block.tiles));
 }
 
-function enumerateTransformSpecs(hand) {
-  const blocks = splitBlocksClient(hand);
+function enumerateTransformSpecs(hand, extraTiles = []) {
+  const blocks = splitBlocksClient(hand, extraTiles);
   const suitMaps = [
     { m: "m", p: "p", s: "s" },
     { m: "m", p: "s", s: "p" },
@@ -1850,29 +1893,29 @@ function enumerateTransformSpecs(hand) {
   return specs;
 }
 
-function randomTransformSpecs(hand, limit = null) {
-  const specs = enumerateTransformSpecs(hand);
+function randomTransformSpecs(hand, limit = null, extraTiles = []) {
+  const specs = enumerateTransformSpecs(hand, extraTiles);
   shuffleArray(specs);
   return Number.isFinite(limit) ? specs.slice(0, limit) : specs;
 }
 
-function transformProblem(hand, answers, melds, spec) {
+function transformProblem(hand, answers, melds, spec, extras = {}) {
   const output = [];
   const convertedByTile = {};
-  splitBlocksClient(hand).forEach((block) => {
+  const handTiles = parseMpsz(hand);
+  const handRemaining = handTiles.reduce((counts, tile) => {
+    counts[tile] = (counts[tile] || 0) + 1;
+    return counts;
+  }, {});
+  splitBlocksClient(hand, transformAuxiliaryTiles(extras)).forEach((block) => {
     const delta = Number(spec.slides[block.index] || 0);
     if (!block.slideOptions.includes(delta)) throw new Error("許可されないスライドです");
     block.tiles.forEach((tile) => {
-      const wasRed = tile[0] === "0";
-      let rank = tileRank(tile);
-      let suit = tile[1];
-      if (suit !== "z") {
-        rank += delta;
-        if (spec.reverse) rank = 10 - rank;
-        suit = spec.suit_map[suit];
+      const converted = transformTileWithDelta(tile, spec, delta);
+      if (handRemaining[tile] > 0) {
+        output.push(converted);
+        handRemaining[tile]--;
       }
-      const converted = `${wasRed && rank === 5 ? 0 : rank}${suit}`;
-      output.push(converted);
       convertedByTile[tile] = converted;
     });
   });
@@ -1880,27 +1923,83 @@ function transformProblem(hand, answers, melds, spec) {
   if (Object.values(counts).some((count) => count > 4)) {
     throw new Error("変換により同じ牌が5枚以上になります");
   }
-  const transformedAnswers = [...new Set(answers.map((answer) => convertedByTile[answer]))];
+  const transformedAnswers = [...new Set(answers.map((answer) => transformMappedTile(answer, convertedByTile, spec)))];
   if (transformedAnswers.some((answer) => !answer)) throw new Error("解答牌を変換できません");
   const transformedMelds = melds.map((meld) => {
     const tiles = meld.tiles.map((tile) => {
-      const wasRed = tile[0] === "0";
-      let rank = tileRank(tile);
-      let suit = tile[1];
-      if (suit !== "z") {
-        if (spec.reverse) rank = 10 - rank;
-        suit = spec.suit_map[suit];
-      }
-      return `${wasRed && rank === 5 ? 0 : rank}${suit}`;
+      return transformTileWithDelta(tile, spec, 0);
     });
     const mpsz = tilesToMpszClient(tiles);
     return { type: meld.type, name: meld.type === 0 ? "ポン" : "チー", tiles: parseMpsz(mpsz), mpsz };
   });
+  const transformedDoraTiles = parseMpsz(extras.dora || "")
+    .map(doraIndicatorToDora)
+    .map((tile) => transformMappedTile(tile, convertedByTile, spec))
+    .map(doraToDoraIndicator);
   return {
     hand: tilesToMpszClient(output),
     answers: transformedAnswers,
     melds: transformedMelds,
+    dora: tilesToMpszClient(transformedDoraTiles),
+    note: transformTextTiles(extras.note || "", convertedByTile, spec),
   };
+}
+
+function transformAuxiliaryTiles({ dora = "", note = "" } = {}) {
+  return [
+    ...parseMpsz(dora).map(doraIndicatorToDora),
+    ...extractTextTiles(note),
+  ];
+}
+
+function transformTileWithDelta(tile, spec, delta) {
+  const wasRed = tile[0] === "0";
+  let rank = tileRank(tile);
+  let suit = tile[1];
+  if (suit !== "z") {
+    rank += delta;
+    if (spec.reverse) rank = 10 - rank;
+    suit = spec.suit_map[suit];
+  }
+  return `${wasRed && rank === 5 ? 0 : rank}${suit}`;
+}
+
+function transformMappedTile(tile, convertedByTile, spec) {
+  if (convertedByTile[tile]) return convertedByTile[tile];
+  const matchingSource = Object.keys(convertedByTile).find((sourceTile) => samePhysicalTile(sourceTile, tile));
+  return matchingSource ? convertedByTile[matchingSource] : transformTileWithDelta(tile, spec, 0);
+}
+
+function extractTextTiles(text) {
+  const tiles = [];
+  String(text || "").replace(/[0-9]+[mpsz]/g, (match) => {
+    tiles.push(...parseMpsz(match));
+    return match;
+  });
+  return tiles;
+}
+
+function transformTextTiles(text, convertedByTile, spec) {
+  return String(text || "").replace(/[0-9]+[mpsz]/g, (match) => {
+    const transformed = parseMpsz(match).map((tile) => transformMappedTile(tile, convertedByTile, spec));
+    return tilesToMpszClient(transformed);
+  });
+}
+
+function doraIndicatorToDora(tile) {
+  const rank = tileRank(tile);
+  const suit = tile[1];
+  if (suit !== "z") return `${rank === 9 ? 1 : rank + 1}${suit}`;
+  if (rank <= 4) return `${rank === 4 ? 1 : rank + 1}z`;
+  return `${rank === 7 ? 5 : rank + 1}z`;
+}
+
+function doraToDoraIndicator(tile) {
+  const rank = tileRank(tile);
+  const suit = tile[1];
+  if (suit !== "z") return `${rank === 1 ? 9 : rank - 1}${suit}`;
+  if (rank <= 4) return `${rank === 1 ? 4 : rank - 1}z`;
+  return `${rank === 5 ? 7 : rank - 1}z`;
 }
 
 function validateCombinedTileCounts(hand, melds) {
