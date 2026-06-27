@@ -90,9 +90,9 @@ button.danger { color: var(--red); }
 .question { text-align: center; min-height: 360px; }
 .question-meta { display: flex; justify-content: space-between; color: var(--muted); }
 .tag { display: inline-block; padding: 5px 10px; background: #e2eee8; color: var(--green); border-radius: 999px; font-size: 12px; font-weight: 800; }
-.hand { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-width: 0; margin: 55px 0 22px; overflow: hidden; padding: 8px 0 4px; }
+.hand { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-width: 0; margin: 55px 0 22px; overflow: visible; padding: 16px 0 4px; }
 .question-topline { display: flex; justify-content: flex-end; min-height: 28px; }
-.question-hand-row { display: flex; align-items: end; justify-content: center; gap: 14px; min-width: 0; width: 100%; overflow: hidden; }
+.question-hand-row { display: flex; align-items: end; justify-content: center; gap: 14px; min-width: 0; width: 100%; overflow: visible; }
 .question-dora { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; font-weight: 700; }
 .question-dora .concealed-hand { gap: 2px; padding-bottom: 0; }
 .question-dora .dora-tile { width: 30px; box-shadow: 0 2px 6px rgba(28, 24, 17, .14); pointer-events: none; }
@@ -241,6 +241,8 @@ button.danger { color: var(--red); }
 .preview-hand > img { width: 44px; }
 .problem-edit-form { display: grid; gap: 13px; margin: 18px 0; padding: 14px; border-radius: 12px; background: #faf8f3; }
 .problem-edit-form small { color: var(--muted); font-weight: 400; }
+.inline-option { display: inline-flex; grid-auto-flow: column; align-items: center; justify-content: start; gap: 8px; width: fit-content; color: var(--ink); }
+.inline-option input { width: auto; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
 code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
 
@@ -260,9 +262,9 @@ code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
   .admin-grid { grid-template-columns: 1fr; }
   .form-row, .form-row.three { grid-template-columns: 1fr; }
   .question { padding-inline: 10px; }
-  .hand { gap: 6px; margin-top: 28px; overflow: hidden; }
+  .hand { gap: 6px; margin-top: 28px; overflow: visible; padding-top: 12px; }
   .question-topline { min-height: 24px; }
-  .question-hand-row { gap: 6px; overflow: hidden; }
+  .question-hand-row { gap: 6px; overflow: visible; }
   .hand .concealed-hand { gap: 1px; overflow: visible; }
   .hand .concealed-hand .tile {
     width: max(15px, calc((100vw - 72px) / 14));

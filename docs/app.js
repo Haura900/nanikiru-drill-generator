@@ -1073,6 +1073,7 @@ async function generateWithWasm() {
           {
             dora: payload.dora,
             note: payload.note,
+            prompt_note: payload.prompt_note,
           }
         );
         const key = canonicalProblemKey(transformed);
@@ -1114,7 +1115,7 @@ async function generateWithWasm() {
           genre: payload.genre.trim() || "未分類",
           genre_order: payload.genre_order,
           note: candidate.note.trim(),
-          prompt_note: payload.prompt_note.trim(),
+          prompt_note: candidate.prompt_note.trim(),
           source_id: sourceProblem.id,
           transform: candidate.spec,
           created_at: new Date().toISOString(),
@@ -1390,13 +1391,19 @@ function previewProblem(problemId) {
   if (!problem) return;
   selectedManagedProblemId = problemId;
   const preview = $("problem-preview");
+  const sourceProblem = problem.source_id ? problems.find((item) => item.id === problem.source_id) : problem;
+  const sourceId = sourceProblem?.id || problem.id;
+  const relatedProblems = problems.filter((item) => item.source_id === sourceId);
+  const isSourceProblem = problem.id === sourceId;
   preview.classList.remove("hidden");
   preview.innerHTML = `
     <div class="section-heading"><h3>問題編集</h3><button id="close-preview">閉じる</button></div>
     <div class="preview-hand">${parseMpsz(problem.hand).map(tileImage).join("")}${renderMelds(problem.melds || [])}</div>
     <p>登録日: ${formatDate(problem.created_at)}</p>
-    <p>加工元: ${problem.source_id ? escapeHtml(problems.find((item) => item.id === problem.source_id)?.hand || "不明") : "元問題"}</p>
+    <p>加工元: ${problem.source_id ? escapeHtml(sourceProblem?.hand || "不明") : "元問題"}</p>
+    <p>同じ加工元から作られた類題: ${relatedProblems.length}問</p>
     <div class="problem-edit-form">
+      ${problem.source_id && sourceProblem ? `<button id="open-source-problem" type="button">加工元と関連類題をまとめて編集</button>` : ""}
       <label>ジャンル<input id="preview-genre" value="${escapeHtml(problem.genre || "")}"></label>
       <label>手牌（mpsz形式）
         <input id="preview-hand-input" value="${escapeHtml(problem.hand || "")}">
@@ -1408,6 +1415,7 @@ function previewProblem(problemId) {
       </label>
       <label>解説・メモ<textarea id="preview-note" rows="3">${escapeHtml(problem.note || "")}</textarea></label>
       <label>出題時補足<textarea id="preview-prompt-note" rows="2">${escapeHtml(problem.prompt_note || "")}</textarea></label>
+      ${isSourceProblem && relatedProblems.length ? `<label class="inline-option"><input id="preview-update-related" type="checkbox"> この加工元から作られた類題も更新する</label>` : ""}
       <div class="button-row">
         <button id="save-preview-problem" type="button" class="primary">変更を保存</button>
         <button id="delete-preview-problem" type="button" class="danger">この問題を削除</button>
@@ -1420,6 +1428,9 @@ function previewProblem(problemId) {
     preview.classList.add("hidden");
     renderAdminProblems();
   });
+  if (problem.source_id && sourceProblem) {
+    $("open-source-problem").addEventListener("click", () => previewProblem(sourceProblem.id));
+  }
   $("save-preview-problem").addEventListener("click", () => saveEditedProblem(problem));
   $("delete-preview-problem").addEventListener("click", () => deleteEditedProblem(problem));
   renderSimulatorTable($("preview-simulator"), problem.simulator, problem.answers || [], null);
@@ -1461,32 +1472,117 @@ async function saveEditedProblem(problem) {
       answers,
       primary_answer: answers[0],
       genre: $("preview-genre").value.trim() || "未分類",
+      genre_order: genreOrderFor($("preview-genre").value.trim() || "未分類"),
+      note: $("preview-note").value.trim(),
+      prompt_note: $("preview-prompt-note").value.trim(),
     };
-    const duplicate = problems.find(
-      (item) => item.id !== problem.id && canonicalProblemKey(item) === canonicalProblemKey(candidate)
+    const shouldUpdateRelated = !problem.source_id && Boolean($("preview-update-related")?.checked);
+    const relatedProblems = shouldUpdateRelated
+      ? problems.filter((item) => item.source_id === problem.id)
+      : [];
+    const ignoredDuplicateIds = new Set([problem.id, ...relatedProblems.map((item) => item.id)]);
+    const duplicate = problems.find((item) =>
+      !ignoredDuplicateIds.has(item.id) && canonicalProblemKey(item) === canonicalProblemKey(candidate)
     );
     if (duplicate) throw new Error("同じ手牌と副露の問題はすでに登録されています。");
     const payload = problemPayload(candidate);
     const simulation = await analyzeWithWasm(candidate.hand, melds, payload);
     const answerGaps = calculateAnswerGaps(simulation, answers);
+    let relatedUpdates = [];
+    if (relatedProblems.length) {
+      message.textContent = `関連類題を更新しています（0/${relatedProblems.length}）`;
+      relatedUpdates = await buildRelatedProblemUpdates(candidate, relatedProblems, (index, total) => {
+        message.textContent = `関連類題を更新しています（${index}/${total}）`;
+      });
+      validateProblemSetAfterUpdates(problem.id, candidate, relatedUpdates);
+    }
     Object.assign(problem, candidate, {
-      note: $("preview-note").value.trim(),
-      prompt_note: $("preview-prompt-note").value.trim(),
       simulator: simulation,
       answer_gaps: answerGaps,
       unverified: false,
     });
+    relatedUpdates.forEach(({ problem: target, update }) => Object.assign(target, update));
     await saveProblems();
     refreshGenres();
     renderAdminProblems();
     previewProblem(problem.id);
     const savedMessage = $("preview-edit-message");
     savedMessage.className = "message ok";
-    savedMessage.textContent = "変更を保存しました。";
+    savedMessage.textContent = relatedUpdates.length
+      ? `変更を保存し、関連類題${relatedUpdates.length}問も更新しました。`
+      : "変更を保存しました。";
   } catch (error) {
     message.className = "message error";
     message.textContent = error.message;
   }
+}
+
+async function buildRelatedProblemUpdates(sourceCandidate, relatedProblems, onProgress) {
+  const sourcePayload = problemPayload(sourceCandidate);
+  const sourceDora = sourcePayload.dora;
+  const updates = [];
+  for (let index = 0; index < relatedProblems.length; index++) {
+    const target = relatedProblems[index];
+    onProgress?.(index + 1, relatedProblems.length);
+    if (!target.transform) throw new Error(`類題の加工情報がありません: ${target.hand}`);
+    const transformed = transformProblem(
+      sourceCandidate.hand,
+      sourceCandidate.answers,
+      sourceCandidate.melds || [],
+      target.transform,
+      {
+        dora: sourceDora,
+        note: sourceCandidate.note || "",
+        prompt_note: sourceCandidate.prompt_note || "",
+      }
+    );
+    validateCombinedTileCounts(parseMpsz(transformed.hand), transformed.melds);
+    const payload = { ...problemPayload(target), dora: transformed.dora };
+    const simulation = await analyzeWithWasm(transformed.hand, transformed.melds, payload);
+    const answerGaps = calculateAnswerGaps(simulation, transformed.answers);
+    updates.push({
+      problem: target,
+      update: {
+        hand: transformed.hand,
+        answers: transformed.answers,
+        primary_answer: transformed.answers[0],
+        melds: transformed.melds,
+        melds_text: transformed.melds.map((meld) => meld.mpsz).join(" "),
+        genre: sourceCandidate.genre,
+        genre_order: genreOrderFor(sourceCandidate.genre),
+        note: transformed.note,
+        prompt_note: transformed.prompt_note,
+        settings: {
+          ...(target.settings || {}),
+          dora_indicators: parseMpsz(transformed.dora),
+        },
+        simulator: simulation,
+        answer_gaps: answerGaps,
+        unverified: false,
+      },
+    });
+  }
+  return updates;
+}
+
+function validateProblemSetAfterUpdates(sourceProblemId, sourceCandidate, relatedUpdates) {
+  const keys = new Map();
+  problems.forEach((problem) => {
+    if (problem.id === sourceProblemId || relatedUpdates.some((item) => item.problem.id === problem.id)) return;
+    keys.set(canonicalProblemKey(problem), problem.hand);
+  });
+  const planned = [
+    { id: sourceProblemId, key: canonicalProblemKey(sourceCandidate), label: sourceCandidate.hand },
+    ...relatedUpdates.map(({ problem, update }) => ({
+      id: problem.id,
+      key: canonicalProblemKey(update),
+      label: update.hand,
+    })),
+  ];
+  planned.forEach((item) => {
+    if (keys.has(item.key)) throw new Error(`同じ手牌と副露の問題がすでにあります: ${item.label}`);
+    keys.set(item.key, item.label);
+  });
 }
 
 async function deleteEditedProblem(problem) {
@@ -1942,6 +2038,7 @@ function transformProblem(hand, answers, melds, spec, extras = {}) {
     melds: transformedMelds,
     dora: tilesToMpszClient(transformedDoraTiles),
     note: transformTextTiles(extras.note || "", convertedByTile, spec),
+    prompt_note: transformTextTiles(extras.prompt_note || "", convertedByTile, spec),
   };
 }
 
