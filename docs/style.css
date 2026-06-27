@@ -104,10 +104,10 @@ button.danger { color: var(--red); }
 .question-melds { display: flex; align-items: end; justify-content: flex-end; flex: 0 0 auto; min-width: 0; }
 .question-melds .meld-area { padding-left: 0; }
 .question-melds .meld { height: auto; }
-.question-melds .meld-tile img { width: min(58px, max(15px, calc((100vw - 72px) / 14))); }
+.question-melds .meld-tile img { width: clamp(24px, 3.4vw, 44px); }
 .question-melds .meld-tile.sideways {
-  width: min(86px, max(21px, calc((100vw - 72px) / 10.3)));
-  height: min(58px, max(15px, calc((100vw - 72px) / 14)));
+  width: clamp(36px, 5vw, 62px);
+  height: clamp(24px, 3.4vw, 44px);
 }
 .review-settings { margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #faf8f3; }
 .review-settings h3 { margin-bottom: 8px; }
