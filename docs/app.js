@@ -277,11 +277,15 @@ function answerQuestion(tile, clickedButton) {
   const dueText = dueAt <= Date.now() + 1000
     ? "すぐに復習対象になります"
     : `次回: ${new Date(dueAt).toLocaleString("ja-JP")}`;
+  const postReviewText = currentQuizContext?.mode === "review"
+    ? renderPostReviewInfo(currentProblem.id)
+    : "";
   $("question-genre").textContent = currentProblem.genre || "未分類";
   $("question-genre").classList.remove("hidden");
   result.innerHTML = `<strong>${correct ? "正解" : "不正解"}</strong>
     <p>ジャンル: ${escapeHtml(currentProblem.genre || "未分類")}</p>
     <p>正解として設定された打牌: ${escapeHtml(answerText)} ／ ${escapeHtml(dueText)}</p>
+    ${postReviewText ? `<p>${postReviewText}</p>` : ""}
     ${currentProblem.note ? `<p>${renderTextWithTiles(currentProblem.note)}</p>` : ""}
     <div class="result-actions">
       <button id="edit-current-problem" type="button">問題編集</button>
@@ -298,6 +302,20 @@ function answerQuestion(tile, clickedButton) {
     tile
   );
   renderGenreQuizTable();
+}
+
+function renderPostReviewInfo(currentProblemId) {
+  const remaining = dueReviewProblems().filter((problem) => problem.id !== currentProblemId);
+  if (!remaining.length) return "後難問なし";
+  const byGenre = remaining.reduce((counts, problem) => {
+    const genre = problem.genre || "未分類";
+    counts[genre] = (counts[genre] || 0) + 1;
+    return counts;
+  }, {});
+  const summary = Object.entries(byGenre)
+    .map(([genre, count]) => `${genre}:${count}問`)
+    .join(" / ");
+  return `後難問あり: ${remaining.length}問${summary ? ` (${summary})` : ""}`;
 }
 
 function continueQuestion() {
