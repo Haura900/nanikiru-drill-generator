@@ -3,6 +3,7 @@ const HISTORY_KEY = "nanikiru-learning-v1";
 const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
 const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
+const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
   wrong_retry_days: 0,
@@ -45,6 +46,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindAdmin();
   bindExport();
   buildTilePicker();
+  renderAdminCount();
   renderReviewSettings();
   renderBuildVersion();
   await loadProblems();
@@ -430,6 +432,25 @@ function renderReviewSettings() {
   });
 }
 
+function loadAdminCount() {
+  const value = Number(localStorage.getItem(ADMIN_COUNT_KEY));
+  return Number.isFinite(value) && value >= 1 && value <= 100 ? Math.floor(value) : 10;
+}
+
+function saveAdminCount() {
+  const input = $("admin-count");
+  if (!input) return;
+  const value = Math.max(1, Math.min(100, Math.floor(Number(input.value) || 10)));
+  input.value = String(value);
+  localStorage.setItem(ADMIN_COUNT_KEY, String(value));
+}
+
+function renderAdminCount() {
+  const input = $("admin-count");
+  if (!input) return;
+  input.value = String(loadAdminCount());
+}
+
 function bindStats() {
   $("reset-history").addEventListener("click", () => {
     if (confirm("この端末の学習履歴をすべて削除しますか？")) {
@@ -626,6 +647,7 @@ function bindAdmin() {
   $("save-button").addEventListener("click", saveCurrentProblem);
   $("generate-button").addEventListener("click", generateWithWasm);
   $("admin-tolerance").addEventListener("input", updateToleranceHint);
+  $("admin-count").addEventListener("input", saveAdminCount);
   ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
     .forEach((id) => $(id).addEventListener("input", renderAdminProblems));
   $("select-filtered-button").addEventListener("click", selectFilteredProblems);
