@@ -957,7 +957,7 @@ function bindAdmin() {
 
 function bindManagementSortControls() {
   if (managementSortBound) return;
-  const table = $("management-table");
+  const table = $("management-table") || document.querySelector(".management-table");
   if (!table) return;
   managementSortBound = true;
   table.addEventListener("click", (event) => {
@@ -1658,7 +1658,10 @@ function renderAdminProblems() {
     })
   );
   document.querySelectorAll(".sort-th").forEach((button) => {
-    button.classList.toggle("active", managementSort.key === button.dataset.sort);
+    const active = managementSort.key === button.dataset.sort;
+    button.classList.toggle("active", active);
+    button.dataset.direction = active ? managementSort.direction : "";
+    button.setAttribute("aria-sort", active ? (managementSort.direction === "asc" ? "ascending" : "descending") : "none");
   });
   renderGenreOrderEditor();
 }
