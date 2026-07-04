@@ -114,8 +114,7 @@ function showGenreSelection() {
 }
 
 function showReviewQuestion() {
-  const selection = $("quiz-genre-selection");
-  if (selection) selection.classList.add("hidden");
+  showQuestionLayout();
   startReviewQuestion();
 }
 
@@ -208,12 +207,15 @@ function startReviewQuestion() {
   showQuestionFromPool(pool, true);
 }
 
-function showQuizQuestionMode() {
+function showQuestionLayout() {
   const selection = $("quiz-genre-selection");
   if (selection) selection.classList.add("hidden");
+  const empty = $("quiz-empty");
+  if (empty) empty.classList.add("hidden");
 }
 
 function showQuestionFromPool(pool, reviewMode) {
+  showQuestionLayout();
   if (!pool.length) {
     $("question-card").classList.add("hidden");
     $("quiz-empty").classList.remove("hidden");
@@ -488,6 +490,7 @@ function renderStats() {
   drawOverallChart(attempts);
   renderGenreChartFilters(attempts);
   drawDailyChart(attempts);
+  drawHardSolveChart(history);
   drawReviewScheduleChart(history);
   drawReviewIntervalChart(history);
 }
@@ -551,6 +554,32 @@ function drawDailyChart(attempts) {
   drawLineChart($("daily-chart"), [{ name: "日付別", color: "#386fa4", points }], false);
 }
 
+function drawHardSolveChart(history) {
+  const daily = {};
+  Object.values(history).forEach((state) => {
+    let hadWrong = false;
+    let countedThisStreak = false;
+    (state.attempts || []).forEach((attempt) => {
+      if (!attempt.correct) {
+        hadWrong = true;
+        countedThisStreak = false;
+        return;
+      }
+      if (hadWrong && !countedThisStreak) {
+        const date = new Date(attempt.at).toLocaleDateString("sv-SE");
+        daily[date] ||= { total: 0 };
+        daily[date].total++;
+        countedThisStreak = true;
+      }
+    });
+  });
+  const points = Object.entries(daily).sort().map(([date, value]) => ({
+    label: date.slice(5),
+    value: value.total,
+  }));
+  drawBarChart($("hard-solve-chart"), points, "#8a5b3d");
+}
+
 function drawReviewScheduleChart(history) {
   const buckets = buildReviewScheduleBuckets(history);
   drawBarChart($("review-schedule-chart"), buckets, "#23745a");
@@ -565,7 +594,7 @@ function buildReviewScheduleBuckets(history) {
   const now = Date.now();
   const counts = new Map();
   Object.values(history).forEach((state) => {
-    if (!state?.attempts?.length) return;
+    if (!isReviewProblemState(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, Math.floor((dueAt - now) / DAY));
@@ -593,7 +622,7 @@ function buildReviewIntervalBuckets(history) {
     { label: "31日以上", min: 31, max: Infinity, value: 0 },
   ];
   Object.values(history).forEach((state) => {
-    if (!state?.attempts?.length) return;
+    if (!isReviewProblemState(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, Math.floor((dueAt - now) / DAY));
@@ -603,9 +632,16 @@ function buildReviewIntervalBuckets(history) {
   return buckets.map(({ label, value }) => ({ label, value }));
 }
 
+function isReviewProblemState(state) {
+  if (!state?.attempts?.length) return false;
+  return state.attempts.length > 1 || state.attempts.some((attempt) => !attempt.correct);
+}
+
 function drawBarChart(canvas, items, barColor) {
   if (!canvas) return;
   const context = canvas.getContext("2d");
+  if (!context) return;
+  const data = Array.isArray(items) ? items : [];
   const { width, height } = canvas;
   const left = 62;
   const right = width - 24;
@@ -613,13 +649,14 @@ function drawBarChart(canvas, items, barColor) {
   const bottom = height - 54;
   const chartWidth = right - left;
   const chartHeight = bottom - top;
-  const maxValue = Math.max(1, ...items.map((item) => item.value));
+  const maxValue = Math.max(1, ...data.map((item) => Number(item.value) || 0));
   context.clearRect(0, 0, width, height);
   context.fillStyle = "#fffdf8";
   context.fillRect(0, 0, width, height);
   context.font = "13px sans-serif";
   context.textAlign = "right";
   context.fillStyle = "#66716b";
+  context.lineWidth = 1;
   for (let tick = 0; tick <= 4; tick++) {
     const value = maxValue * tick / 4;
     const y = bottom - value / maxValue * chartHeight;
@@ -630,20 +667,36 @@ function drawBarChart(canvas, items, barColor) {
     context.stroke();
     context.fillText(formatBarValue(value), left - 8, y + 4);
   }
-  if (!items.length) return;
+  context.strokeStyle = "#cfc7b8";
+  context.beginPath();
+  context.moveTo(left, top);
+  context.lineTo(left, bottom);
+  context.lineTo(right, bottom);
+  context.stroke();
+  if (!data.length) {
+    context.fillStyle = "#7a7469";
+    context.textAlign = "center";
+    context.font = "600 15px sans-serif";
+    context.fillText("記録がありません", (left + right) / 2, (top + bottom) / 2);
+    context.textAlign = "left";
+    context.fillStyle = "#66716b";
+    context.fillText("件数", left, height - 14);
+    return;
+  }
   const gap = 8;
-  const barWidth = Math.max(8, Math.min(40, (chartWidth - gap * (items.length - 1)) / items.length));
-  const totalWidth = items.length * barWidth + (items.length - 1) * gap;
+  const barWidth = Math.max(8, Math.min(48, (chartWidth - gap * (data.length - 1)) / data.length));
+  const totalWidth = data.length * barWidth + (data.length - 1) * gap;
   const offset = left + Math.max(0, (chartWidth - totalWidth) / 2);
-  items.forEach((item, index) => {
+  data.forEach((item, index) => {
     const x = offset + index * (barWidth + gap);
-    const barHeight = item.value / maxValue * chartHeight;
+    const value = Number(item.value) || 0;
+    const barHeight = value / maxValue * chartHeight;
     const y = bottom - barHeight;
     context.fillStyle = barColor;
     context.fillRect(x, y, barWidth, barHeight);
     context.fillStyle = "#355348";
     context.textAlign = "center";
-    context.fillText(String(item.value), x + barWidth / 2, y - 6);
+    context.fillText(String(value), x + barWidth / 2, y - 6);
     context.save();
     context.translate(x + barWidth / 2, bottom + 18);
     context.rotate(-Math.PI / 4);
