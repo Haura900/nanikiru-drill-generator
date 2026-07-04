@@ -488,6 +488,8 @@ function renderStats() {
   drawOverallChart(attempts);
   renderGenreChartFilters(attempts);
   drawDailyChart(attempts);
+  drawReviewScheduleChart(history);
+  drawReviewIntervalChart(history);
 }
 
 function drawOverallChart(attempts) {
@@ -547,6 +549,114 @@ function drawDailyChart(attempts) {
     value: value.correct / value.total,
   }));
   drawLineChart($("daily-chart"), [{ name: "日付別", color: "#386fa4", points }], false);
+}
+
+function drawReviewScheduleChart(history) {
+  const buckets = buildReviewScheduleBuckets(history);
+  drawBarChart($("review-schedule-chart"), buckets, "#23745a");
+}
+
+function drawReviewIntervalChart(history) {
+  const buckets = buildReviewIntervalBuckets(history);
+  drawBarChart($("review-interval-chart"), buckets, "#386fa4");
+}
+
+function buildReviewScheduleBuckets(history) {
+  const now = Date.now();
+  const counts = new Map();
+  Object.values(history).forEach((state) => {
+    if (!state?.attempts?.length) return;
+    const dueAt = Number(state.dueAt || 0);
+    if (!dueAt) return;
+    const days = Math.max(0, Math.floor((dueAt - now) / DAY));
+    const key = days >= 31 ? "31日以上" : `${days}日後`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const buckets = [];
+  for (let day = 0; day <= 30; day++) {
+    const label = `${day}日後`;
+    buckets.push({ label, value: counts.get(label) || 0 });
+  }
+  buckets.push({ label: "31日以上", value: counts.get("31日以上") || 0 });
+  return buckets;
+}
+
+function buildReviewIntervalBuckets(history) {
+  const now = Date.now();
+  const buckets = [
+    { label: "今日", min: 0, max: 0, value: 0 },
+    { label: "1日", min: 1, max: 1, value: 0 },
+    { label: "2-3日", min: 2, max: 3, value: 0 },
+    { label: "4-7日", min: 4, max: 7, value: 0 },
+    { label: "8-14日", min: 8, max: 14, value: 0 },
+    { label: "15-30日", min: 15, max: 30, value: 0 },
+    { label: "31日以上", min: 31, max: Infinity, value: 0 },
+  ];
+  Object.values(history).forEach((state) => {
+    if (!state?.attempts?.length) return;
+    const dueAt = Number(state.dueAt || 0);
+    if (!dueAt) return;
+    const days = Math.max(0, Math.floor((dueAt - now) / DAY));
+    const bucket = buckets.find((item) => days >= item.min && days <= item.max);
+    if (bucket) bucket.value++;
+  });
+  return buckets.map(({ label, value }) => ({ label, value }));
+}
+
+function drawBarChart(canvas, items, barColor) {
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  const { width, height } = canvas;
+  const left = 62;
+  const right = width - 24;
+  const top = 26;
+  const bottom = height - 54;
+  const chartWidth = right - left;
+  const chartHeight = bottom - top;
+  const maxValue = Math.max(1, ...items.map((item) => item.value));
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, width, height);
+  context.font = "13px sans-serif";
+  context.textAlign = "right";
+  context.fillStyle = "#66716b";
+  for (let tick = 0; tick <= 4; tick++) {
+    const value = maxValue * tick / 4;
+    const y = bottom - value / maxValue * chartHeight;
+    context.strokeStyle = "#d8d1c3";
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(right, y);
+    context.stroke();
+    context.fillText(formatBarValue(value), left - 8, y + 4);
+  }
+  if (!items.length) return;
+  const gap = 8;
+  const barWidth = Math.max(8, Math.min(40, (chartWidth - gap * (items.length - 1)) / items.length));
+  const totalWidth = items.length * barWidth + (items.length - 1) * gap;
+  const offset = left + Math.max(0, (chartWidth - totalWidth) / 2);
+  items.forEach((item, index) => {
+    const x = offset + index * (barWidth + gap);
+    const barHeight = item.value / maxValue * chartHeight;
+    const y = bottom - barHeight;
+    context.fillStyle = barColor;
+    context.fillRect(x, y, barWidth, barHeight);
+    context.fillStyle = "#355348";
+    context.textAlign = "center";
+    context.fillText(String(item.value), x + barWidth / 2, y - 6);
+    context.save();
+    context.translate(x + barWidth / 2, bottom + 18);
+    context.rotate(-Math.PI / 4);
+    context.fillText(item.label, 0, 0);
+    context.restore();
+  });
+  context.textAlign = "left";
+  context.fillStyle = "#66716b";
+  context.fillText("件数", left, height - 14);
+}
+
+function formatBarValue(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 async function loadProblems() {
