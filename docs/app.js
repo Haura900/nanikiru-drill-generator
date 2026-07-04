@@ -32,6 +32,7 @@ const APP_BUILD_VERSION = typeof window !== "undefined" ? window.NANIKIRU_BUILD_
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
+let managementSortBound = false;
 let selectedManagedProblemId = null;
 let wasmActiveRequestKey = null;
 let wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
@@ -373,10 +374,14 @@ function recordAttempt(problem, correct) {
   } else if (!previous) {
     dueAt = now + reviewSettings.first_correct_days * DAY;
   } else if (!previous.correct) {
-    dueAt = now + reviewSettings.wrong_then_correct_days * DAY;
+    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, now));
+    const delayDays = elapsedDays > 0
+      ? (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier
+      : reviewSettings.wrong_then_correct_days;
+    dueAt = now + delayDays * DAY;
   } else {
-    const elapsedDays = Math.max(0, (now - previous.at) / DAY);
-    dueAt = now + (elapsedDays * reviewSettings.repeat_multiplier + reviewSettings.wrong_then_correct_days) * DAY;
+    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, now));
+    dueAt = now + (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier * DAY;
   }
   state.attempts.push({ at: now, correct, genre: problem.genre || "未分類" });
   state.dueAt = dueAt;
@@ -388,6 +393,29 @@ function recordAttempt(problem, correct) {
 function loadHistory() {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}"); }
   catch { return {}; }
+}
+
+function repairReviewHistoryDueDates() {
+  const history = loadHistory();
+  const reviewSettings = loadReviewSettings();
+  let changed = false;
+  activeHistoryEntries(history).forEach(([, state]) => {
+    const attempts = state?.attempts || [];
+    if (attempts.length < 2) return;
+    const last = attempts[attempts.length - 1];
+    const previous = attempts[attempts.length - 2];
+    if (!last.correct || previous.correct) return;
+    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, last.at));
+    if (elapsedDays <= 0) return;
+    const currentDelayDays = (Number(state.dueAt || 0) - last.at) / DAY;
+    if (Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) > 0.01) return;
+    const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
+    state.dueAt = last.at + fixedDelayDays * DAY;
+    changed = true;
+  });
+  if (changed) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  }
 }
 
 function loadReviewSettings() {
@@ -466,7 +494,7 @@ function renderStats() {
   const history = loadHistory();
   const byGenre = {};
   const attempts = [];
-  Object.values(history).forEach((state) => {
+  activeHistoryEntries(history).forEach(([, state]) => {
     (state.attempts || []).forEach((attempt) => {
       const genre = attempt.genre || "未分類";
       byGenre[genre] ||= { total: 0, correct: 0 };
@@ -485,23 +513,69 @@ function renderStats() {
       <strong>${Math.round(data.correct / data.total * 100)}%</strong>
       <small>${data.correct} / ${data.total} 正解</small>
     </div>`;
-    }).join("") || "<p>まだ解答履歴がありません。</p>";
+  }).join("") || "<p>まだ解答履歴がありません。</p>";
   attempts.sort((a, b) => a.at - b.at);
-  drawOverallChart(attempts);
+  const firstDailyAttempts = buildFirstAttemptsByProblemDay(history);
+  const firstProblemAttempts = buildFirstAttemptsByProblem(history);
+  drawOverallChart(attempts, firstDailyAttempts, firstProblemAttempts);
   renderGenreChartFilters(attempts);
-  drawDailyChart(attempts);
+  drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts);
   drawHardSolveChart(history);
   drawReviewScheduleChart(history);
   drawReviewIntervalChart(history);
 }
 
-function drawOverallChart(attempts) {
+function buildFirstAttemptsByProblemDay(history) {
+  const attempts = [];
+  activeHistoryEntries(history).forEach(([problemId, state]) => {
+    (state?.attempts || []).forEach((attempt) => {
+      attempts.push({ ...attempt, problemId });
+    });
+  });
+  attempts.sort((a, b) => a.at - b.at);
+  const firstAttempts = [];
+  const seen = new Set();
+  attempts.forEach((attempt) => {
+    const problemAttempts = history[attempt.problemId]?.attempts || [];
+    if (!problemAttempts.length || problemAttempts[0].at === attempt.at) return;
+    const key = `${attempt.problemId}:${jstDayKey(attempt.at)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    firstAttempts.push(attempt);
+  });
+  return firstAttempts;
+}
+
+function buildFirstAttemptsByProblem(history) {
+  const firstAttempts = [];
+  activeHistoryEntries(history).forEach(([, state]) => {
+    const first = state?.attempts?.[0];
+    if (first) firstAttempts.push(first);
+  });
+  return firstAttempts.sort((a, b) => a.at - b.at);
+}
+
+function drawOverallChart(attempts, firstDailyAttempts, firstProblemAttempts) {
   const points = attempts.map((attempt, index) => {
     const window = attempts.slice(Math.max(0, index - 299), index + 1);
     const correct = window.filter((item) => item.correct).length;
     return { label: String(index + 1), value: correct / window.length };
   });
-  drawLineChart($("overall-chart"), [{ name: "直近300解答", color: "#23745a", points }], false);
+  const firstDailyPoints = firstDailyAttempts.map((attempt, index) => {
+    const window = firstDailyAttempts.slice(Math.max(0, index - 299), index + 1);
+    const correct = window.filter((item) => item.correct).length;
+    return { label: String(index + 1), value: correct / window.length };
+  });
+  const firstProblemPoints = firstProblemAttempts.map((attempt, index) => {
+    const window = firstProblemAttempts.slice(Math.max(0, index - 299), index + 1);
+    const correct = window.filter((item) => item.correct).length;
+    return { label: String(index + 1), value: correct / window.length };
+  });
+  drawLineChart($("overall-chart"), [
+    { name: "直近300解答", color: "#23745a", points },
+    { name: "復習問題のその日最初", color: "#386fa4", points: firstDailyPoints },
+    { name: "初見の問題", color: "#8a5b3d", points: firstProblemPoints },
+  ], false);
 }
 
 function renderGenreChartFilters(attempts) {
@@ -539,10 +613,10 @@ function drawGenreChart(attempts) {
   drawLineChart($("genre-chart"), series, false);
 }
 
-function drawDailyChart(attempts) {
+function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
   const daily = {};
   attempts.forEach((attempt) => {
-    const date = new Date(attempt.at).toLocaleDateString("sv-SE");
+    const date = jstDayKey(attempt.at);
     daily[date] ||= { total: 0, correct: 0 };
     daily[date].total++;
     if (attempt.correct) daily[date].correct++;
@@ -551,26 +625,43 @@ function drawDailyChart(attempts) {
     label: date.slice(5),
     value: value.correct / value.total,
   }));
-  drawLineChart($("daily-chart"), [{ name: "日付別", color: "#386fa4", points }], false);
+  const firstDaily = {};
+  firstDailyAttempts.forEach((attempt) => {
+    const date = jstDayKey(attempt.at);
+    firstDaily[date] ||= { total: 0, correct: 0 };
+    firstDaily[date].total++;
+    if (attempt.correct) firstDaily[date].correct++;
+  });
+  const firstPoints = Object.entries(firstDaily).sort().map(([date, value]) => ({
+    label: date.slice(5),
+    value: value.correct / value.total,
+  }));
+  const firstProblemDaily = {};
+  firstProblemAttempts.forEach((attempt) => {
+    const date = jstDayKey(attempt.at);
+    firstProblemDaily[date] ||= { total: 0, correct: 0 };
+    firstProblemDaily[date].total++;
+    if (attempt.correct) firstProblemDaily[date].correct++;
+  });
+  const firstProblemPoints = Object.entries(firstProblemDaily).sort().map(([date, value]) => ({
+    label: date.slice(5),
+    value: value.correct / value.total,
+  }));
+  drawLineChart($("daily-chart"), [
+    { name: "日付別", color: "#386fa4", points },
+    { name: "復習問題のその日最初", color: "#8a5b3d", points: firstPoints },
+    { name: "初見の問題", color: "#a23a31", points: firstProblemPoints },
+  ], false);
 }
 
 function drawHardSolveChart(history) {
   const daily = {};
-  Object.values(history).forEach((state) => {
-    let hadWrong = false;
-    let countedThisStreak = false;
-    (state.attempts || []).forEach((attempt) => {
-      if (!attempt.correct) {
-        hadWrong = true;
-        countedThisStreak = false;
-        return;
-      }
-      if (hadWrong && !countedThisStreak) {
-        const date = new Date(attempt.at).toLocaleDateString("sv-SE");
-        daily[date] ||= { total: 0 };
-        daily[date].total++;
-        countedThisStreak = true;
-      }
+  activeHistoryEntries(history).forEach(([, state]) => {
+    (state.attempts || []).forEach((attempt, index) => {
+      if (index === 0) return;
+      const date = jstDayKey(attempt.at);
+      daily[date] ||= { total: 0 };
+      daily[date].total++;
     });
   });
   const points = Object.entries(daily).sort().map(([date, value]) => ({
@@ -593,11 +684,11 @@ function drawReviewIntervalChart(history) {
 function buildReviewScheduleBuckets(history) {
   const now = Date.now();
   const counts = new Map();
-  Object.values(history).forEach((state) => {
+  activeHistoryEntries(history).forEach(([, state]) => {
     if (!isReviewProblemState(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
-    const days = Math.max(0, Math.floor((dueAt - now) / DAY));
+    const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
     const key = days >= 31 ? "31日以上" : `${days}日後`;
     counts.set(key, (counts.get(key) || 0) + 1);
   });
@@ -621,15 +712,52 @@ function buildReviewIntervalBuckets(history) {
     { label: "15-30日", min: 15, max: 30, value: 0 },
     { label: "31日以上", min: 31, max: Infinity, value: 0 },
   ];
-  Object.values(history).forEach((state) => {
+  activeHistoryEntries(history).forEach(([, state]) => {
     if (!isReviewProblemState(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
-    const days = Math.max(0, Math.floor((dueAt - now) / DAY));
+    const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
     const bucket = buckets.find((item) => days >= item.min && days <= item.max);
     if (bucket) bucket.value++;
   });
   return buckets.map(({ label, value }) => ({ label, value }));
+}
+
+function activeHistoryEntries(history) {
+  const problemIds = new Set(problems.map((problem) => problem.id));
+  return Object.entries(history || {}).filter(([problemId]) => problemIds.has(problemId));
+}
+
+function calendarDaysDiffJst(fromMs, toMs) {
+  const fromDate = jstDateUtcMs(fromMs);
+  const toDate = jstDateUtcMs(toMs);
+  return Math.round((toDate - fromDate) / DAY);
+}
+
+function jstDateUtcMs(ms) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(ms));
+  const year = Number(parts.find((part) => part.type === "year")?.value || 0);
+  const month = Number(parts.find((part) => part.type === "month")?.value || 1);
+  const day = Number(parts.find((part) => part.type === "day")?.value || 1);
+  return Date.UTC(year, month - 1, day);
+}
+
+function jstDayKey(ms) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(ms));
+  const year = parts.find((part) => part.type === "year")?.value || "0000";
+  const month = parts.find((part) => part.type === "month")?.value || "00";
+  const day = parts.find((part) => part.type === "day")?.value || "00";
+  return `${year}-${month}-${day}`;
 }
 
 function isReviewProblemState(state) {
@@ -727,6 +855,7 @@ async function loadProblems() {
     console.error("Failed to load problems:", error);
   }
   refreshGenres();
+  repairReviewHistoryDueDates();
   renderAdminProblems();
 }
 
@@ -822,7 +951,27 @@ function bindAdmin() {
       renderAllInputPreviews();
     })
   );
+  bindManagementSortControls();
   updateToleranceHint();
+}
+
+function bindManagementSortControls() {
+  if (managementSortBound) return;
+  const table = $("management-table");
+  if (!table) return;
+  managementSortBound = true;
+  table.addEventListener("click", (event) => {
+    const button = event.target.closest(".sort-th");
+    if (!button || !table.contains(button)) return;
+    const key = button.dataset.sort;
+    if (managementSort.key === key) {
+      managementSort.direction = managementSort.direction === "asc" ? "desc" : "asc";
+    } else {
+      managementSort.key = key;
+      managementSort.direction = key === "created_at" ? "desc" : "asc";
+    }
+    renderAdminProblems();
+  });
 }
 
 function bindExport() {
@@ -1447,6 +1596,8 @@ function genreOrderFor(genre) {
 }
 
 function renderAdminProblems() {
+  const history = loadHistory();
+  const problemById = new Map(problems.map((problem) => [problem.id, problem]));
   const problemCount = $("create-problem-count");
   if (problemCount) problemCount.textContent = `${problems.length}問`;
   const manageProblemCount = $("manage-problem-count");
@@ -1484,18 +1635,21 @@ function renderAdminProblems() {
     if (sourceFilter.value && sourceFilter.value !== "original" && problem.source_id !== sourceFilter.value) return false;
     const haystack = `${problem.hand} ${(problem.answers || []).join(" ")} ${problem.genre} ${problem.note || ""} ${problem.prompt_note || ""}`.toLowerCase();
     return !text || haystack.includes(text);
-  }));
+  }), history, problemById);
   managementRows.innerHTML = filteredManagementProblems.map((problem) => {
-    const source = problems.find((item) => item.id === problem.source_id);
+    const source = problemById.get(problem.source_id);
     const selected = problem.id === selectedManagedProblemId;
+    const state = history[problem.id];
     return `<tr data-id="${problem.id}" class="${selected ? "selected-problem-row" : ""}">
       <td><input class="problem-select" type="checkbox" value="${problem.id}" ${selected ? "checked" : ""}></td>
       <td><button class="problem-link" type="button" data-id="${problem.id}">${escapeHtml(problem.hand)}</button></td>
       <td>${escapeHtml(problem.genre || "未分類")}</td>
       <td>${formatDate(problem.created_at)}</td>
+      <td>${formatDate(lastAttemptAt(state))}</td>
+      <td>${formatDate(state?.dueAt)}</td>
       <td>${source ? escapeHtml(source.hand) : "元問題"}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="5">登録済みの問題がありません。</td></tr>`;
+  }).join("") || `<tr><td colspan="7">登録済みの問題がありません。</td></tr>`;
   document.querySelectorAll(".problem-link").forEach((button) =>
     button.addEventListener("click", () => {
       selectedManagedProblemId = button.dataset.id;
@@ -1504,17 +1658,7 @@ function renderAdminProblems() {
     })
   );
   document.querySelectorAll(".sort-th").forEach((button) => {
-    const key = button.dataset.sort;
-    button.classList.toggle("active", managementSort.key === key);
-    button.addEventListener("click", () => {
-      if (managementSort.key === key) {
-        managementSort.direction = managementSort.direction === "asc" ? "desc" : "asc";
-      } else {
-        managementSort.key = key;
-        managementSort.direction = key === "created_at" ? "desc" : "asc";
-      }
-      renderAdminProblems();
-    });
+    button.classList.toggle("active", managementSort.key === button.dataset.sort);
   });
   renderGenreOrderEditor();
 }
@@ -1582,25 +1726,34 @@ function renderGenreOrderEditor() {
   );
 }
 
-function sortManagementProblems(items) {
+function sortManagementProblems(items, history = loadHistory(), problemById = new Map(problems.map((problem) => [problem.id, problem]))) {
   const { key, direction } = managementSort;
   const factor = direction === "asc" ? 1 : -1;
   const sortValue = (problem) => {
     if (key === "hand") return String(problem.hand || "");
     if (key === "genre") return String(problem.genre || "未分類");
     if (key === "created_at") return String(problem.created_at || "");
+    if (key === "last_attempt_at") return String(lastAttemptAt(history[problem.id]) || "");
+    if (key === "due_at") return String(history[problem.id]?.dueAt || "");
     if (key === "source") {
-      const source = problems.find((item) => item.id === problem.source_id);
+      const source = problemById.get(problem.source_id);
       return source ? String(source.hand || "") : "元問題";
     }
     return "";
   };
-  return [...items].sort((a, b) => {
-    const av = sortValue(a);
-    const bv = sortValue(b);
+  return [...items].map((problem) => ({ problem, value: sortValue(problem) })).sort((a, b) => {
+    const av = a.value;
+    const bv = b.value;
     if (key === "created_at") return (Date.parse(av || 0) - Date.parse(bv || 0)) * factor;
+    if (key === "last_attempt_at") return (Date.parse(av || 0) - Date.parse(bv || 0)) * factor;
+    if (key === "due_at") return (Number(av || 0) - Number(bv || 0)) * factor;
     return av.localeCompare(bv, "ja") * factor;
-  });
+  }).map(({ problem }) => problem);
+}
+
+function lastAttemptAt(state) {
+  const attempts = state?.attempts || [];
+  return attempts.length ? attempts[attempts.length - 1].at : "";
 }
 
 async function moveGenre(index, direction) {

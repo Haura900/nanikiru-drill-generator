@@ -240,10 +240,15 @@ button.danger { color: var(--red); }
 .sort-th::after { content: "↕"; font-size: .75rem; opacity: .45; }
 .sort-th.active::after { opacity: .9; }
 .management-table-wrap { overflow-x: auto; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; }
-.management-table { width: 100%; min-width: 800px; border-collapse: collapse; background: white; }
+.management-table { width: 100%; min-width: 980px; border-collapse: collapse; background: white; }
 .management-table th, .management-table td { padding: 10px 12px; border-bottom: 1px solid #eee9df; text-align: left; }
 .management-table th { background: #edf3ef; font-size: 12px; color: #355348; }
 .management-table th:first-child, .management-table td:first-child { width: 42px; text-align: center; }
+.management-table th:nth-child(2), .management-table td:nth-child(2) { width: 240px; }
+.management-table th:nth-child(3), .management-table td:nth-child(3) { width: 140px; }
+.management-table th:nth-child(4), .management-table td:nth-child(4),
+.management-table th:nth-child(5), .management-table td:nth-child(5),
+.management-table th:nth-child(6), .management-table td:nth-child(6) { width: 132px; }
 .management-table tr.selected-problem-row td { background: #e5f1eb; }
 .problem-link { border: 0; padding: 0; color: var(--green); background: transparent; font-family: monospace; }
 .problem-preview { margin-top: 20px; border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: #fff; }
