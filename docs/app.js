@@ -257,13 +257,32 @@ function renderQuestion(problem, state) {
     : "";
   const meldHtml = renderMelds(problem.melds || []);
   $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
-    <button class="tile" data-tile="${tile}" title="${tile}">
-      ${tileImage(tile)}
-    </button>
+    ${renderQuestionTile(tile, problem.settings || {})}
   `).join("")}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
+}
+
+function renderQuestionTile(tile, settings = {}) {
+  const markers = questionTileMarkers(tile, settings);
+  const classes = ["tile", markers.includes("ド") ? "hand-dora" : ""].filter(Boolean).join(" ");
+  const markerHtml = markers.length
+    ? `<span class="tile-marker-row">${markers.map((marker) => `<span class="tile-marker ${marker === "ド" ? "dora-marker" : "wind-marker"}">${marker}</span>`).join("")}</span>`
+    : `<span class="tile-marker-row empty-marker" aria-hidden="true"></span>`;
+  return `<button class="${classes}" data-tile="${tile}" title="${tile}">
+      ${tileImage(tile)}
+      ${markerHtml}
+    </button>`;
+}
+
+function questionTileMarkers(tile, settings = {}) {
+  const markers = [];
+  const doraTiles = (settings.dora_indicators || []).map(doraIndicatorToDora);
+  if (doraTiles.some((dora) => samePhysicalTile(dora, tile))) markers.push("ド");
+  if (settings.round_wind && samePhysicalTile(settings.round_wind, tile)) markers.push("場");
+  if (settings.seat_wind && samePhysicalTile(settings.seat_wind, tile)) markers.push("自");
+  return markers;
 }
 
 function renderQuestionStatus(problem, state) {
