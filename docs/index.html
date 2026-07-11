@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260711-1">
 </head>
 <body>
   <header>
@@ -245,6 +245,24 @@
           </div>
         </div>
 
+        <section class="cloud-sync-panel" aria-labelledby="cloud-sync-title">
+          <h3 id="cloud-sync-title">クラウド同期</h3>
+          <div id="cloud-signed-out">
+            <p>Googleアカウントでログインすると、PCとスマートフォンで問題・成績・復習予定を同期できます。</p>
+            <button id="cloud-login-button" type="button" class="primary">Googleでログインして同期</button>
+          </div>
+          <div id="cloud-signed-in" class="hidden">
+            <p id="cloud-user" class="cloud-user"></p>
+            <p id="cloud-status"></p>
+            <p id="cloud-last-sync" class="description"></p>
+            <div class="button-row">
+              <button id="cloud-sync-now" type="button">今すぐ同期</button>
+              <button id="cloud-logout-button" type="button">ログアウト</button>
+            </div>
+          </div>
+          <div id="cloud-error" class="message hidden"></div>
+        </section>
+
         <div class="review-settings">
           <h3>復習の間隔</h3>
           <p class="description">ここで復習の出題間隔を調整します。</p>
@@ -307,11 +325,12 @@
           <li><strong>復習</strong>：忘却曲線に基づいた間隔で復習問題を出題します</li>
           <li><strong>類題自動生成</strong>：元問題を反転・置換・スライドして作った候補を、何切るシミュレーターで確認してから登録します</li>
           <li><strong>成績管理</strong>：ジャンル別、日付別の成績を見やすく確認できます</li>
-          <li><strong>端末保存</strong>：作成した問題と学習記録は、この端末だけに保存されます</li>
+          <li><strong>データ保存</strong>：ログインなしではこのブラウザに保存し、Googleログイン時は端末間で同期できます</li>
         </ul>
 
         <h3>データについて</h3>
-        <p>作成した問題と学習記録はすべてこの端末に保存されます。外部へ送信されることはありません。</p>
+        <p>ログインしていない場合、問題と学習記録はこのブラウザだけに保存されます。</p>
+        <p>Googleでログインすると、問題・学習記録・復習設定がFirebase上のユーザー専用領域に保存され、同じGoogleアカウントを使用する端末間で同期されます。</p>
         <ul>
           <li>同じブラウザでも、保存先が違うと見えません</li>
           <li>ブラウザの保存領域を消すと失われます</li>
@@ -349,7 +368,8 @@
     </div>
   </div>
 
-  <script src="version.js"></script>
-  <script src="app.js?v=20260623-2"></script>
+  <script src="version.js?v=20260711-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260711-1"></script>
+  <script src="app.js?v=20260711-1"></script>
 </body>
 </html>

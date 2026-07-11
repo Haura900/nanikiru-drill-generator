@@ -28,6 +28,7 @@ jobs:
           short_sha="$(git rev-parse --short=7 HEAD)"
           build_date="$(date -u +%Y.%m.%d)"
           printf 'window.NANIKIRU_BUILD_VERSION = "v%s-%s";\n' "$build_date" "$short_sha" > docs/version.js
+          sed -E -i "s/v=[0-9]{8}-[0-9]+/v=${short_sha}/g" docs/index.html docs/firebase-sync.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

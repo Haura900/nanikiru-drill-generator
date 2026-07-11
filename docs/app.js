@@ -4,6 +4,7 @@ const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
 const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
 const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
+let suppressCloudUpload = false;
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
   wrong_retry_days: 0,
@@ -51,6 +52,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderReviewSettings();
   renderBuildVersion();
   await loadProblems();
+  exposeSaveDataApi();
+  window.dispatchEvent(new CustomEvent("nanikiru-app-ready"));
   document.getElementById("nav").classList.remove("hidden");
   showView("quiz");
   maybeShowBackupPrompt();
@@ -406,6 +409,7 @@ function recordAttempt(problem, correct) {
   state.dueAt = dueAt;
   history[problem.id] = state;
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  markDataDirty("学習履歴を保存");
   return dueAt;
 }
 
@@ -434,6 +438,7 @@ function repairReviewHistoryDueDates() {
   });
   if (changed) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    markDataDirty("復習予定を修正");
   }
 }
 
@@ -465,6 +470,7 @@ function saveReviewSettings(settings) {
     wrong_then_correct_days: sanitizeReviewSetting(settings.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
     repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
   }));
+  markDataDirty("復習設定を保存");
 }
 
 function renderReviewSettings() {
@@ -492,6 +498,7 @@ function saveAdminCount() {
   const value = Math.max(1, Math.min(100, Math.floor(Number(input.value) || 10)));
   input.value = String(value);
   localStorage.setItem(ADMIN_COUNT_KEY, String(value));
+  markDataDirty("類題作成数を保存");
 }
 
 function renderAdminCount() {
@@ -504,6 +511,7 @@ function bindStats() {
   $("reset-history").addEventListener("click", () => {
     if (confirm("この端末の学習履歴をすべて削除しますか？")) {
       localStorage.removeItem(HISTORY_KEY);
+      markDataDirty("学習履歴を削除");
       renderStats();
     }
   });
@@ -860,6 +868,7 @@ function formatBarValue(value) {
 }
 
 async function loadProblems() {
+  problems = [];
   try {
     const stored = localStorage.getItem(PROBLEMS_KEY);
     if (stored) {
@@ -880,6 +889,7 @@ async function loadProblems() {
 
 async function saveProblems() {
   localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+  markDataDirty("問題を保存");
 }
 
 function restoreLocalStorageSnapshot(snapshot) {
@@ -1995,6 +2005,7 @@ async function deleteEditedProblem(problem) {
   const history = loadHistory();
   delete history[problem.id];
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  markDataDirty("問題と学習履歴を削除");
   selectedManagedProblemId = null;
   await saveProblems();
   $("problem-preview").classList.add("hidden");
@@ -2006,17 +2017,7 @@ async function dumpProblems() {
   try {
     const exportMsg = $("export-message");
     const base64Output = $("base64-output");
-    const history = loadHistory();
-    const reviewSettings = loadReviewSettings();
-    const data = {
-      v: 4,
-      p: problems,
-      h: history,
-      s: reviewSettings,
-    };
-    const sourceBytes = new TextEncoder().encode(JSON.stringify(data));
-    const compressedBytes = await compressBytes(sourceBytes);
-    const base64 = `NK3:${toBase64(compressedBytes, true)}`;
+    const base64 = await encodeCurrentSave();
     if (base64Output) {
       base64Output.value = base64;
     }
@@ -2034,10 +2035,25 @@ async function dumpProblems() {
   }
 }
 
-function resetAllData() {
-  if (!confirm("問題データと学習記録を含む、このアプリの保存データをすべて削除しますか？")) return;
-  localStorage.clear();
-  location.reload();
+async function resetAllData() {
+  const cloud = window.NanikiruCloud;
+  const signedIn = Boolean(cloud?.getState?.().user);
+  const prompt = signedIn
+    ? "この端末とクラウドの問題・学習記録をすべて削除します。\nこの操作は元に戻せません。"
+    : "問題データと学習記録を含む、この端末の保存データをすべて削除しますか？";
+  if (!confirm(prompt)) return;
+  try {
+    if (signedIn) await cloud.deleteCloudData();
+    localStorage.clear();
+    problems = [];
+    location.reload();
+  } catch (error) {
+    const exportMsg = $("export-message");
+    if (exportMsg) {
+      exportMsg.className = "message error";
+      exportMsg.textContent = `クラウドを削除できなかったため、初期化を中止しました: ${error.message}`;
+    }
+  }
 }
 
 async function restoreDump(event) {
@@ -2045,43 +2061,7 @@ async function restoreDump(event) {
   if (!file) return;
   try {
     const text = await file.text();
-    const data = await decodeSaveData(text);
-    if (data?.v === 4 && Array.isArray(data.p)) {
-      problems = data.p;
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(data.h || {}));
-      if (data.s && typeof data.s === "object") {
-        saveReviewSettings(data.s);
-      }
-      await saveProblems();
-      renderReviewSettings();
-    } else if (data?.v === 3 && Array.isArray(data.p)) {
-      problems = data.p;
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(data.h || {}));
-      await saveProblems();
-    } else if (Array.isArray(data)) {
-      problems = data;
-      await saveProblems();
-    } else if (Array.isArray(data.problems)) {
-      problems = data.problems;
-      if (data.history) {
-        localStorage.setItem(HISTORY_KEY, data.history);
-      }
-      if (data.settings && typeof data.settings === "object") {
-        saveReviewSettings(data.settings);
-      }
-      await saveProblems();
-      renderReviewSettings();
-    } else if (data.localStorage && typeof data.localStorage === "object") {
-      restoreLocalStorageSnapshot(data.localStorage);
-      const stored = localStorage.getItem(PROBLEMS_KEY);
-      problems = stored ? JSON.parse(stored) : [];
-      await saveProblems();
-      renderReviewSettings();
-    } else {
-      throw new Error("復元できるデータではありません。");
-    }
-    renderAdminProblems();
-    refreshGenres();
+    await applyEncodedSave(text, { source: "backup", scheduleUpload: true });
     const restoreMsg = $("restore-message");
     if (restoreMsg) {
       restoreMsg.className = "message ok";
@@ -2153,6 +2133,99 @@ function buildTilePicker() {
   });
   buildTextTilePicker("note-picker", "admin-note", tiles);
   renderAllInputPreviews();
+}
+
+function buildSaveData() {
+  return { v: 5, p: problems, h: loadHistory(), s: loadReviewSettings(), a: loadAdminCount() };
+}
+
+async function encodeSaveData(data) {
+  const bytes = new TextEncoder().encode(JSON.stringify(data));
+  return `NK3:${toBase64(await compressBytes(bytes), true)}`;
+}
+
+async function encodeCurrentSave() {
+  return encodeSaveData(buildSaveData());
+}
+
+function normalizeSaveData(data) {
+  if (Array.isArray(data)) return { v: 5, p: data, h: {}, s: DEFAULT_REVIEW_SETTINGS, a: 10 };
+  if (data?.localStorage && typeof data.localStorage === "object") {
+    const snapshot = data.localStorage;
+    let parsedProblems = [];
+    try {
+      const raw = JSON.parse(snapshot[PROBLEMS_KEY] || "[]");
+      parsedProblems = Array.isArray(raw) ? raw : raw.problems || [];
+    } catch { parsedProblems = []; }
+    let parsedHistory = {};
+    let parsedSettings = DEFAULT_REVIEW_SETTINGS;
+    try { parsedHistory = JSON.parse(snapshot[HISTORY_KEY] || "{}"); } catch { /* legacy */ }
+    try { parsedSettings = JSON.parse(snapshot[REVIEW_SETTINGS_KEY] || "{}"); } catch { /* legacy */ }
+    return { v: 5, p: parsedProblems, h: parsedHistory, s: parsedSettings, a: Number(snapshot[ADMIN_COUNT_KEY]) || 10 };
+  }
+  if (Array.isArray(data?.p)) {
+    return { v: 5, p: data.p, h: data.h || {}, s: data.s || DEFAULT_REVIEW_SETTINGS, a: data.a || 10 };
+  }
+  if (Array.isArray(data?.problems)) {
+    let legacyHistory = data.history || {};
+    if (typeof legacyHistory === "string") {
+      try { legacyHistory = JSON.parse(legacyHistory); } catch { legacyHistory = {}; }
+    }
+    return { v: 5, p: data.problems, h: legacyHistory, s: data.settings || DEFAULT_REVIEW_SETTINGS, a: data.adminCount || 10 };
+  }
+  throw new Error("復元できるデータではありません。");
+}
+
+async function applySaveData(data, options = {}) {
+  const normalized = normalizeSaveData(data);
+  return withCloudUploadSuppressed(async () => {
+    problems = normalized.p;
+    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(normalized.h || {}));
+    localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(normalized.s || DEFAULT_REVIEW_SETTINGS));
+    localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || 10))));
+    repairReviewHistoryDueDates();
+    renderReviewSettings();
+    renderAdminCount();
+    renderAdminProblems();
+    refreshGenres();
+    if (currentView === "stats") renderStats();
+    if (currentView === "quiz") showGenreSelection();
+    if (options.scheduleUpload) setTimeout(() => markDataDirty(options.source || "データを復元"), 0);
+    return normalized;
+  });
+}
+
+async function applyEncodedSave(text, options = {}) {
+  return applySaveData(await decodeSaveData(text), options);
+}
+
+function hasMeaningfulLocalData() {
+  return problems.length > 0 || Object.keys(loadHistory()).length > 0;
+}
+
+function markDataDirty(reason) {
+  if (!suppressCloudUpload) window.NanikiruCloud?.scheduleUpload?.(reason);
+}
+
+async function withCloudUploadSuppressed(callback) {
+  const previous = suppressCloudUpload;
+  suppressCloudUpload = true;
+  try { return await callback(); }
+  finally { suppressCloudUpload = previous; }
+}
+
+function clearActiveAppData() {
+  [PROBLEMS_KEY, HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY].forEach((key) => localStorage.removeItem(key));
+  problems = [];
+}
+
+function exposeSaveDataApi() {
+  window.NanikiruSaveData = {
+    buildSaveData, encodeSaveData, encodeCurrentSave, decodeSaveData, applySaveData,
+    applyEncodedSave, hasMeaningfulLocalData, withCloudUploadSuppressed, clearActiveAppData,
+    reload: async () => { await loadProblems(); renderReviewSettings(); renderAdminCount(); },
+  };
 }
 
 function buildTextTilePicker(pickerId, inputId, tiles) {

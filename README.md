@@ -1,5 +1,7 @@
 # 類題何切る量産ドリル
 
+Googleログインによる端末間同期を利用する場合は、[FIREBASE_SETUP.md](FIREBASE_SETUP.md)に従ってFirebase AuthenticationとCloud Firestoreを設定してください。未設定時は従来どおりブラウザ内だけで利用できます。
+
 何切る問題を出題・復習しながら、元問題から類題を自動生成するブラウザアプリです。
 
 ## できること
