@@ -2,83 +2,112 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedInAs(uid) {
-      return request.auth != null && request.auth.uid == uid;
+    function owner(uid) { return request.auth != null && request.auth.uid == uid; }
+    function validDevice(value) { return value is string && value.size() >= 8 && value.size() <= 128; }
+    function validId(value) { return value is string && value.size() >= 1 && value.size() <= 128 && value.matches('^[A-Za-z0-9_-]+$'); }
+    function validMutation(value) { return value is string && value.size() >= 16 && value.size() <= 200; }
+    function validCommon(data) { return data.schemaVersion == 2 && validDevice(data.updatedBy) && data.updatedAt == request.time; }
+    function catalogContains(uid, problemId) {
+      return exists(/databases/$(database)/documents/users/$(uid)/sync/catalog)
+        && get(/databases/$(database)/documents/users/$(uid)/sync/catalog).data.problemIds.hasAny([problemId]);
+    }
+    function migrationComplete(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)/migration/state)
+        && get(/databases/$(database)/documents/users/$(uid)/migration/state).data.completed == true;
     }
 
-    function validCount(value) {
-      return value is int && value > 0 && value <= 64;
+    match /users/{uid}/sync/catalog {
+      allow read: if owner(uid);
+      allow create: if owner(uid)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'problemIds', 'updatedAt', 'updatedBy'])
+        && validCommon(request.resource.data)
+        && request.resource.data.problemIds is list
+        && request.resource.data.problemIds.size() <= 10000
+        && request.resource.data.problemIds.join(',').matches('^[A-Za-z0-9_,-]*$')
+        && request.resource.data.problemIds.toSet().size() == request.resource.data.problemIds.size();
+      allow update: if owner(uid)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'problemIds', 'updatedAt', 'updatedBy'])
+        && validCommon(request.resource.data)
+        && request.resource.data.problemIds is list
+        && request.resource.data.problemIds.size() <= 10000
+        && request.resource.data.problemIds.join(',').matches('^[A-Za-z0-9_,-]*$')
+        && request.resource.data.problemIds.toSet().size() == request.resource.data.problemIds.size()
+        && request.resource.data.problemIds.toSet().hasAll(resource.data.problemIds.toSet());
+      allow delete: if false;
     }
 
-    function validLength(value) {
-      return value is int && value > 0 && value <= 38400000;
+    match /users/{uid}/problems/{problemId} {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid) && validId(problemId) && catalogContains(uid, problemId)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'problemId', 'payload', 'modifiedAt', 'mutationId', 'updatedAt', 'updatedBy', 'deleted'])
+        && validCommon(request.resource.data)
+        && request.resource.data.problemId == problemId
+        && request.resource.data.modifiedAt is int && request.resource.data.modifiedAt > 0
+        && validMutation(request.resource.data.mutationId)
+        && request.resource.data.deleted is bool
+        && request.resource.data.payload is string
+        && ((request.resource.data.deleted && request.resource.data.payload == '')
+          || (!request.resource.data.deleted && request.resource.data.payload.size() >= 1 && request.resource.data.payload.size() <= 750000));
+      allow delete: if false;
     }
 
-    function validHash(value) {
-      return value is string && value.matches('^[0-9a-f]{64}$');
+    match /users/{uid}/progress/{problemId} {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid) && validId(problemId) && catalogContains(uid, problemId)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'problemId', 'payload', 'answeredAt', 'mutationId', 'updatedAt', 'updatedBy', 'deleted'])
+        && validCommon(request.resource.data)
+        && request.resource.data.problemId == problemId
+        && request.resource.data.answeredAt is int && request.resource.data.answeredAt > 0
+        && validMutation(request.resource.data.mutationId)
+        && request.resource.data.deleted is bool
+        && request.resource.data.payload is string
+        && ((request.resource.data.deleted && request.resource.data.payload == '')
+          || (!request.resource.data.deleted && request.resource.data.payload.size() >= 1 && request.resource.data.payload.size() <= 200000));
+      allow delete: if false;
     }
 
-    function validDevice(value) {
-      return value is string && value.size() >= 8 && value.size() <= 128;
+    match /users/{uid}/settings/main {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'reviewSettings', 'adminCount', 'genreOrder', 'modifiedAt', 'mutationId', 'updatedAt', 'updatedBy'])
+        && validCommon(request.resource.data)
+        && request.resource.data.modifiedAt is int && request.resource.data.modifiedAt > 0
+        && validMutation(request.resource.data.mutationId)
+        && request.resource.data.adminCount is int && request.resource.data.adminCount >= 1 && request.resource.data.adminCount <= 100
+        && request.resource.data.genreOrder is list && request.resource.data.genreOrder.size() <= 10000
+        && request.resource.data.genreOrder.join('').size() <= 1000000
+        && request.resource.data.reviewSettings.keys().hasOnly(['first_correct_days', 'wrong_retry_days', 'wrong_then_correct_days', 'repeat_multiplier'])
+        && request.resource.data.reviewSettings.first_correct_days is number && request.resource.data.reviewSettings.first_correct_days >= 0 && request.resource.data.reviewSettings.first_correct_days <= 36500
+        && request.resource.data.reviewSettings.wrong_retry_days is number && request.resource.data.reviewSettings.wrong_retry_days >= 0 && request.resource.data.reviewSettings.wrong_retry_days <= 36500
+        && request.resource.data.reviewSettings.wrong_then_correct_days is number && request.resource.data.reviewSettings.wrong_then_correct_days >= 0 && request.resource.data.reviewSettings.wrong_then_correct_days <= 36500
+        && request.resource.data.reviewSettings.repeat_multiplier is number && request.resource.data.reviewSettings.repeat_multiplier >= 0 && request.resource.data.reviewSettings.repeat_multiplier <= 100;
+      allow delete: if false;
     }
 
-    function validMeta(data) {
-      return data.keys().hasOnly([
-          'schemaVersion', 'saveVersion', 'snapshotId', 'chunkCount', 'charLength',
-          'sha256', 'revision', 'updatedAt', 'updatedBy'
-        ])
-        && data.schemaVersion == 1
-        && data.saveVersion == 5
-        && data.snapshotId is string
-        && data.snapshotId.size() > 0
-        && data.snapshotId.size() <= 160
-        && validCount(data.chunkCount)
-        && validLength(data.charLength)
-        && validHash(data.sha256)
-        && data.revision is int
-        && data.revision > 0
-        && validDevice(data.updatedBy)
-        && data.updatedAt == request.time;
-    }
-
-    function validSnapshot(data) {
-      return data.keys().hasOnly(['chunkCount', 'charLength', 'sha256', 'createdAt', 'createdBy'])
-        && validCount(data.chunkCount)
-        && validLength(data.charLength)
-        && validHash(data.sha256)
-        && validDevice(data.createdBy)
-        && data.createdAt == request.time;
+    match /users/{uid}/migration/state {
+      allow read: if owner(uid);
+      allow create, update: if owner(uid)
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'completed', 'problemCount', 'progressCount', 'updatedAt', 'updatedBy'])
+        && validCommon(request.resource.data)
+        && request.resource.data.completed == true
+        && request.resource.data.problemCount is int && request.resource.data.problemCount >= 0 && request.resource.data.problemCount <= 10000
+        && request.resource.data.progressCount is int && request.resource.data.progressCount >= 0 && request.resource.data.progressCount <= 10000;
+      allow delete: if false;
     }
 
     match /users/{uid}/sync/meta {
-      allow read, delete: if signedInAs(uid);
-      allow create: if signedInAs(uid) && validMeta(request.resource.data) && request.resource.data.revision == 1;
-      allow update: if signedInAs(uid)
-        && validMeta(request.resource.data)
-        && request.resource.data.revision == resource.data.revision + 1;
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && !migrationComplete(uid);
     }
-
     match /users/{uid}/snapshots/{snapshotId} {
-      allow read, delete: if signedInAs(uid);
-      allow create: if signedInAs(uid) && validSnapshot(request.resource.data);
-      allow update: if false;
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && !migrationComplete(uid);
     }
-
     match /users/{uid}/snapshots/{snapshotId}/chunks/{chunkId} {
-      allow read, delete: if signedInAs(uid);
-      allow create: if signedInAs(uid)
-        && chunkId.matches('^[0-9]{6}$')
-        && request.resource.data.keys().hasOnly(['index', 'payload'])
-        && request.resource.data.index is int
-        && request.resource.data.index >= 0
-        && request.resource.data.index < 64
-        && request.resource.data.payload is string
-        && request.resource.data.payload.size() <= 600000;
-      allow update: if false;
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && !migrationComplete(uid);
     }
 
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    match /{document=**} { allow read, write: if false; }
   }
 }

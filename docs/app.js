@@ -4,6 +4,7 @@ const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
 const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
 const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
+const GENRE_ORDER_KEY = "nanikiru-genre-order-v1";
 let suppressCloudUpload = false;
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
@@ -134,19 +135,24 @@ function refreshGenres() {
 
 function genresInRegistrationOrder() {
   const firstSeen = new Map();
-  const order = new Map();
   problems.forEach((problem) => {
     const genre = problem.genre || "未分類";
     if (!firstSeen.has(genre)) firstSeen.set(genre, firstSeen.size);
-    const value = Number(problem.genre_order);
-    if (problem.genre_order !== null && problem.genre_order !== undefined && Number.isFinite(value)) {
-      order.set(genre, Math.min(order.get(genre) ?? value, value));
-    }
   });
-  return [...firstSeen.keys()].sort((a, b) =>
-    (order.get(a) ?? firstSeen.get(a)) - (order.get(b) ?? firstSeen.get(b))
-    || firstSeen.get(a) - firstSeen.get(b)
-  );
+  const stored = loadGenreOrder();
+  return [...stored.filter((genre) => firstSeen.has(genre)), ...[...firstSeen.keys()].filter((genre) => !stored.includes(genre))];
+}
+
+function loadGenreOrder() {
+  try {
+    const value = JSON.parse(localStorage.getItem(GENRE_ORDER_KEY) || "[]");
+    return Array.isArray(value) ? [...new Set(value.filter((genre) => typeof genre === "string" && genre.length <= 100))] : [];
+  } catch { return []; }
+}
+
+function saveGenreOrder(order, markDirty = true) {
+  localStorage.setItem(GENRE_ORDER_KEY, JSON.stringify(order));
+  if (markDirty) markSettingsDirty("ジャンル順を保存");
 }
 
 function renderGenreQuizTable() {
@@ -349,7 +355,7 @@ function renderPostReviewInfo(currentProblemId) {
     return counts;
   }, {});
   const summary = Object.entries(byGenre)
-    .map(([genre, count]) => `${genre}:${count}問`)
+    .map(([genre, count]) => `${escapeHtml(genre)}:${count}問`)
     .join(" / ");
   return `後難問あり: ${remaining.length}問${summary ? ` (${summary})` : ""}`;
 }
@@ -409,7 +415,7 @@ function recordAttempt(problem, correct) {
   state.dueAt = dueAt;
   history[problem.id] = state;
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  markDataDirty("学習履歴を保存");
+  markProgressDirty(problem.id, "学習履歴を保存");
   return dueAt;
 }
 
@@ -438,7 +444,7 @@ function repairReviewHistoryDueDates() {
   });
   if (changed) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    markDataDirty("復習予定を修正");
+    activeHistoryEntries(history).forEach(([problemId]) => markProgressDirty(problemId, "復習予定を修正"));
   }
 }
 
@@ -470,7 +476,7 @@ function saveReviewSettings(settings) {
     wrong_then_correct_days: sanitizeReviewSetting(settings.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
     repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
   }));
-  markDataDirty("復習設定を保存");
+  markSettingsDirty("復習設定を保存");
 }
 
 function renderReviewSettings() {
@@ -498,7 +504,7 @@ function saveAdminCount() {
   const value = Math.max(1, Math.min(100, Math.floor(Number(input.value) || 10)));
   input.value = String(value);
   localStorage.setItem(ADMIN_COUNT_KEY, String(value));
-  markDataDirty("類題作成数を保存");
+  markSettingsDirty("類題作成数を保存");
 }
 
 function renderAdminCount() {
@@ -510,8 +516,9 @@ function renderAdminCount() {
 function bindStats() {
   $("reset-history").addEventListener("click", () => {
     if (confirm("この端末の学習履歴をすべて削除しますか？")) {
+      const deletedProgressIds = Object.keys(loadHistory());
       localStorage.removeItem(HISTORY_KEY);
-      markDataDirty("学習履歴を削除");
+      deletedProgressIds.forEach((problemId) => markProgressDirty(problemId, "学習履歴を削除", true));
       renderStats();
     }
   });
@@ -878,18 +885,32 @@ async function loadProblems() {
       } else if (Array.isArray(data.problems)) {
         problems = data.problems;
       }
+      const loadedIds = new Set();
+      problems = problems.map((problem) => validateProblemObject(problem, loadedIds));
     }
   } catch (error) {
     console.error("Failed to load problems:", error);
+    problems = [];
   }
+  if (!localStorage.getItem(GENRE_ORDER_KEY)) {
+    const ordered = [...problems]
+      .sort((left, right) => Number(left.genre_order ?? Number.MAX_SAFE_INTEGER) - Number(right.genre_order ?? Number.MAX_SAFE_INTEGER))
+      .map((problem) => problem.genre || "未分類");
+    saveGenreOrder([...new Set(ordered)], false);
+  }
+  problems.forEach((problem) => delete problem.genre_order);
   refreshGenres();
   repairReviewHistoryDueDates();
   renderAdminProblems();
 }
 
-async function saveProblems() {
+async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
+  if (!Array.isArray(changedIds) || !Array.isArray(deletedIds) || (!changedIds.length && !deletedIds.length)) {
+    throw new Error("saveProblemsにはchangedIdsまたはdeletedIdsの指定が必要です。");
+  }
   localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
-  markDataDirty("問題を保存");
+  changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
+  deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
 }
 
 function restoreLocalStorageSnapshot(snapshot) {
@@ -1131,7 +1152,6 @@ function manualProblemFromForm(verification = null) {
     tolerance_percent: payload.tolerance_percent,
     note: payload.note,
     prompt_note: payload.prompt_note,
-    genre_order: genreOrderFor(payload.genre),
     source_id: null,
     transform: null,
     created_at: new Date().toISOString(),
@@ -1400,7 +1420,6 @@ function adminPayload() {
     melds: $("admin-melds").value,
     answers: $("admin-answer").value,
     genre: $("admin-genre").value,
-    genre_order: genreOrderFor($("admin-genre").value),
     turn: Number($("admin-turn").value),
     round_wind: $("admin-round-wind").value,
     seat_wind: $("admin-seat-wind").value,
@@ -1424,14 +1443,16 @@ async function registerProblem(problem) {
 
 async function registerProblems(records) {
   const existing = new Set(problems.map(canonicalProblemKey));
+  const changedIds = [];
   records.forEach((record) => {
     const key = canonicalProblemKey(record);
     if (!existing.has(key)) {
       problems.push(record);
       existing.add(key);
+      changedIds.push(record.id);
     }
   });
-  await saveProblems();
+  if (changedIds.length) await saveProblems({ changedIds });
   renderAdminProblems();
   refreshGenres();
 }
@@ -1520,7 +1541,6 @@ async function generateWithWasm() {
           melds: candidate.melds,
           melds_text: candidate.melds.map((meld) => meld.mpsz).join(" "),
           genre: payload.genre.trim() || "未分類",
-          genre_order: payload.genre_order,
           note: candidate.note.trim(),
           prompt_note: candidate.prompt_note.trim(),
           source_id: sourceProblem.id,
@@ -1733,7 +1753,10 @@ async function applyBulkOperation(operation) {
       }
     });
   }
-  await saveProblems();
+  await saveProblems(operation.action === "delete"
+    ? { deletedIds: [...ids] }
+    : { changedIds: [...ids] });
+  if (operation.action === "delete") [...ids].forEach((problemId) => markProgressDirty(problemId, "問題削除に伴う履歴削除", true));
   renderAdminProblems();
   refreshGenres();
 }
@@ -1793,9 +1816,7 @@ async function moveGenre(index, direction) {
   const destination = index + direction;
   if (destination < 0 || destination >= genres.length) return;
   [genres[index], genres[destination]] = [genres[destination], genres[index]];
-  const order = new Map(genres.map((genre, orderIndex) => [genre, orderIndex]));
-  problems.forEach((problem) => problem.genre_order = order.get(problem.genre || "未分類"));
-  await saveProblems();
+  saveGenreOrder(genres);
   renderAdminProblems();
   refreshGenres();
 }
@@ -1886,7 +1907,6 @@ async function saveEditedProblem(problem) {
       answers,
       primary_answer: answers[0],
       genre: $("preview-genre").value.trim() || "未分類",
-      genre_order: genreOrderFor($("preview-genre").value.trim() || "未分類"),
       note: $("preview-note").value.trim(),
       prompt_note: $("preview-prompt-note").value.trim(),
     };
@@ -1916,7 +1936,7 @@ async function saveEditedProblem(problem) {
       unverified: false,
     });
     relatedUpdates.forEach(({ problem: target, update }) => Object.assign(target, update));
-    await saveProblems();
+    await saveProblems({ changedIds: [problem.id, ...relatedUpdates.map((item) => item.problem.id)] });
     refreshGenres();
     renderAdminProblems();
     previewProblem(problem.id);
@@ -1963,7 +1983,6 @@ async function buildRelatedProblemUpdates(sourceCandidate, relatedProblems, onPr
         melds: transformed.melds,
         melds_text: transformed.melds.map((meld) => meld.mpsz).join(" "),
         genre: sourceCandidate.genre,
-        genre_order: genreOrderFor(sourceCandidate.genre),
         note: transformed.note,
         prompt_note: transformed.prompt_note,
         settings: {
@@ -2005,9 +2024,9 @@ async function deleteEditedProblem(problem) {
   const history = loadHistory();
   delete history[problem.id];
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  markDataDirty("問題と学習履歴を削除");
+  markProgressDirty(problem.id, "問題と学習履歴を削除", true);
   selectedManagedProblemId = null;
-  await saveProblems();
+  await saveProblems({ deletedIds: [problem.id] });
   $("problem-preview").classList.add("hidden");
   renderAdminProblems();
   refreshGenres();
@@ -2061,6 +2080,7 @@ async function restoreDump(event) {
   if (!file) return;
   try {
     const text = await file.text();
+    if (!confirm("バックアップの内容で復元します。クラウドにだけ存在する問題と履歴は削除扱いになります。続けますか？")) return;
     await applyEncodedSave(text, { source: "backup", scheduleUpload: true });
     const restoreMsg = $("restore-message");
     if (restoreMsg) {
@@ -2136,7 +2156,7 @@ function buildTilePicker() {
 }
 
 function buildSaveData() {
-  return { v: 5, p: problems, h: loadHistory(), s: loadReviewSettings(), a: loadAdminCount() };
+  return { v: 6, p: problems, h: loadHistory(), s: loadReviewSettings(), a: loadAdminCount(), g: loadGenreOrder() };
 }
 
 async function encodeSaveData(data) {
@@ -2149,7 +2169,7 @@ async function encodeCurrentSave() {
 }
 
 function normalizeSaveData(data) {
-  if (Array.isArray(data)) return { v: 5, p: data, h: {}, s: DEFAULT_REVIEW_SETTINGS, a: 10 };
+  if (Array.isArray(data)) return validateNormalizedSave({ v: 6, p: data, h: {}, s: DEFAULT_REVIEW_SETTINGS, a: 10, g: [] });
   if (data?.localStorage && typeof data.localStorage === "object") {
     const snapshot = data.localStorage;
     let parsedProblems = [];
@@ -2161,19 +2181,46 @@ function normalizeSaveData(data) {
     let parsedSettings = DEFAULT_REVIEW_SETTINGS;
     try { parsedHistory = JSON.parse(snapshot[HISTORY_KEY] || "{}"); } catch { /* legacy */ }
     try { parsedSettings = JSON.parse(snapshot[REVIEW_SETTINGS_KEY] || "{}"); } catch { /* legacy */ }
-    return { v: 5, p: parsedProblems, h: parsedHistory, s: parsedSettings, a: Number(snapshot[ADMIN_COUNT_KEY]) || 10 };
+    let genreOrder = [];
+    try { genreOrder = JSON.parse(snapshot[GENRE_ORDER_KEY] || "[]"); } catch { /* legacy */ }
+    return validateNormalizedSave({ v: 6, p: parsedProblems, h: parsedHistory, s: parsedSettings, a: Number(snapshot[ADMIN_COUNT_KEY]) || 10, g: genreOrder });
   }
   if (Array.isArray(data?.p)) {
-    return { v: 5, p: data.p, h: data.h || {}, s: data.s || DEFAULT_REVIEW_SETTINGS, a: data.a || 10 };
+    return validateNormalizedSave({ v: 6, p: data.p, h: data.h || {}, s: data.s || DEFAULT_REVIEW_SETTINGS, a: data.a || 10, g: data.g || [] });
   }
   if (Array.isArray(data?.problems)) {
     let legacyHistory = data.history || {};
     if (typeof legacyHistory === "string") {
       try { legacyHistory = JSON.parse(legacyHistory); } catch { legacyHistory = {}; }
     }
-    return { v: 5, p: data.problems, h: legacyHistory, s: data.settings || DEFAULT_REVIEW_SETTINGS, a: data.adminCount || 10 };
+    return validateNormalizedSave({ v: 6, p: data.problems, h: legacyHistory, s: data.settings || DEFAULT_REVIEW_SETTINGS, a: data.adminCount || 10, g: data.genreOrder || [] });
   }
   throw new Error("復元できるデータではありません。");
+}
+
+function validateNormalizedSave(data) {
+  if (!Array.isArray(data.p) || data.p.length > 10000) throw new Error("問題データの件数が不正です。");
+  const ids = new Set();
+  data.p = data.p.map((problem) => validateProblemObject(problem, ids));
+  if (!data.h || typeof data.h !== "object" || Array.isArray(data.h)) throw new Error("学習履歴の形式が不正です。");
+  Object.entries(data.h).forEach(([id, progress]) => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || !progress || !Array.isArray(progress.attempts) || !Number.isFinite(Number(progress.dueAt))) throw new Error("学習履歴に不正な値があります。");
+  });
+  if (!Array.isArray(data.g) || data.g.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("ジャンル順の形式が不正です。");
+  return data;
+}
+
+function validateProblemObject(problem, ids = new Set()) {
+  if (!problem || typeof problem !== "object" || Array.isArray(problem)) throw new Error("問題データの形式が不正です。");
+  const id = String(problem.id || "");
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || ids.has(id)) throw new Error("問題IDが不正または重複しています。");
+  ids.add(id);
+  const genre = String(problem.genre || "未分類"), hand = String(problem.hand || ""), note = String(problem.note || ""), promptNote = String(problem.prompt_note || "");
+  if (genre.length > 100 || hand.length > 100 || note.length > 10000 || promptNote.length > 2000) throw new Error(`問題 ${id} の文字数が上限を超えています。`);
+  if (!Array.isArray(problem.answers) || problem.answers.length > 34 || problem.answers.some((answer) => typeof answer !== "string" || !/^[0-9][mpsz]$/.test(answer))) throw new Error(`問題 ${id} の指定解答が不正です。`);
+  if (problem.source_id != null && !/^[A-Za-z0-9_-]{1,128}$/.test(String(problem.source_id))) throw new Error(`問題 ${id} の加工元IDが不正です。`);
+  if (problem.melds != null && (!Array.isArray(problem.melds) || problem.melds.length > 4 || problem.melds.some((meld) => !meld || typeof meld !== "object" || String(meld.name || "").length > 100))) throw new Error(`問題 ${id} の副露情報が不正です。`);
+  return { ...problem, id, genre, hand, note, prompt_note: promptNote, answers: [...problem.answers] };
 }
 
 async function applySaveData(data, options = {}) {
@@ -2184,6 +2231,7 @@ async function applySaveData(data, options = {}) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(normalized.h || {}));
     localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(normalized.s || DEFAULT_REVIEW_SETTINGS));
     localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || 10))));
+    saveGenreOrder(normalized.g || [], false);
     repairReviewHistoryDueDates();
     renderReviewSettings();
     renderAdminCount();
@@ -2191,7 +2239,14 @@ async function applySaveData(data, options = {}) {
     refreshGenres();
     if (currentView === "stats") renderStats();
     if (currentView === "quiz") showGenreSelection();
-    if (options.scheduleUpload) setTimeout(() => markDataDirty(options.source || "データを復元"), 0);
+    if (options.scheduleUpload) setTimeout(() => {
+      window.NanikiruCloud?.markAllDirty?.({
+        problemIds: problems.map((problem) => problem.id),
+        progressIds: Object.keys(normalized.h || {}),
+        reason: options.source || "データを復元",
+        replaceCloud: options.source === "backup",
+      });
+    }, 0);
     return normalized;
   });
 }
@@ -2204,8 +2259,16 @@ function hasMeaningfulLocalData() {
   return problems.length > 0 || Object.keys(loadHistory()).length > 0;
 }
 
-function markDataDirty(reason) {
-  if (!suppressCloudUpload) window.NanikiruCloud?.scheduleUpload?.(reason);
+function markProblemDirty(problemId, reason, deleted = false) {
+  if (!suppressCloudUpload) window.NanikiruCloud?.markProblemDirty?.(problemId, { reason, deleted });
+}
+
+function markProgressDirty(problemId, reason, deleted = false) {
+  if (!suppressCloudUpload) window.NanikiruCloud?.markProgressDirty?.(problemId, { reason, deleted });
+}
+
+function markSettingsDirty(reason) {
+  if (!suppressCloudUpload) window.NanikiruCloud?.markSettingsDirty?.(reason);
 }
 
 async function withCloudUploadSuppressed(callback) {
@@ -2216,7 +2279,7 @@ async function withCloudUploadSuppressed(callback) {
 }
 
 function clearActiveAppData() {
-  [PROBLEMS_KEY, HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY].forEach((key) => localStorage.removeItem(key));
+  [PROBLEMS_KEY, HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY, GENRE_ORDER_KEY].forEach((key) => localStorage.removeItem(key));
   problems = [];
 }
 
@@ -2224,8 +2287,49 @@ function exposeSaveDataApi() {
   window.NanikiruSaveData = {
     buildSaveData, encodeSaveData, encodeCurrentSave, decodeSaveData, applySaveData,
     applyEncodedSave, hasMeaningfulLocalData, withCloudUploadSuppressed, clearActiveAppData,
+    getProblem: (problemId) => problems.find((problem) => problem.id === problemId) || null,
+    getProgress: (problemId) => loadHistory()[problemId] || null,
+    getSettings: () => ({ reviewSettings: loadReviewSettings(), adminCount: loadAdminCount(), genreOrder: loadGenreOrder() }),
+    applyCloudRecords,
     reload: async () => { await loadProblems(); renderReviewSettings(); renderAdminCount(); },
   };
+}
+
+async function applyCloudRecords({ problemRecords = [], progressRecords = [], settingsRecord = null } = {}) {
+  return withCloudUploadSuppressed(async () => {
+    const history = loadHistory();
+    problemRecords.forEach((record) => {
+      const index = problems.findIndex((problem) => problem.id === record.problemId);
+      if (record.deleted) {
+        if (index >= 0) problems.splice(index, 1);
+      } else {
+        const value = validateProblemObject(record.value);
+        if (value.id !== record.problemId) throw new Error("クラウド問題のIDが一致しません。");
+        if (index >= 0) problems[index] = value;
+        else problems.push(value);
+      }
+    });
+    progressRecords.forEach((record) => {
+      if (record.deleted) delete history[record.problemId];
+      else history[record.problemId] = record.value;
+    });
+    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    if (settingsRecord) {
+      const safeSettings = {
+        first_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
+        wrong_retry_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
+        wrong_then_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
+        repeat_multiplier: sanitizeReviewSetting(settingsRecord.reviewSettings?.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+      };
+      if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
+      localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
+      localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || 10))));
+      saveGenreOrder(settingsRecord.genreOrder, false);
+    }
+    renderReviewSettings(); renderAdminCount(); renderAdminProblems(); refreshGenres();
+    if (currentView === "stats") renderStats();
+  });
 }
 
 function buildTextTilePicker(pickerId, inputId, tiles) {

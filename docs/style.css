@@ -275,6 +275,11 @@ button.danger { color: var(--red); }
 .inline-option input { width: auto; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
 code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
+.data-output-section { margin-top: 24px; }
+.save-copy-details { margin-top: 16px; }
+.save-output-text { width: 100%; height: 200px; margin-top: 12px; font-family: monospace; font-size: 12px; }
+.save-copy-button { margin-top: 8px; }
+.data-section-divider { margin: 32px 0; }
 
 .cloud-sync-panel { margin: 22px 0; padding: 18px; border: 1px solid #b9d2c5; border-radius: 14px; background: #f4faf6; }
 .cloud-sync-panel h3 { margin-top: 0; }

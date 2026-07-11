@@ -7,7 +7,7 @@
 3. Authenticationの「Sign-in method」でGoogleを有効にします。
 4. Cloud Firestoreを本番モードで作成します。
 5. Authenticationの「設定 > 承認済みドメイン」に `haura900.github.io` を追加します。
-6. WebアプリのFirebase設定を [`docs/firebase-config.js`](docs/firebase-config.js) に記入します。空欄のままなら同期機能だけが無効になり、ローカル版は動作します。
+6. WebアプリとreCAPTCHA Enterpriseの公開設定は [`docs/firebase-config.js`](docs/firebase-config.js) で管理します。本番プロジェクト `nanikiru-drill-haura900` の実値を設定済みです。
 7. Firebase CLIで、このリポジトリの [`firestore.rules`](firestore.rules) をデプロイします。
 
    ```powershell
@@ -20,6 +20,13 @@
 
 8. 変更をGitHubへ反映し、GitHub Pagesのデプロイ完了を待ちます。
 9. PCとスマートフォンで `https://haura900.github.io/nanikiru-drill-generator/` を開き、同じGoogleアカウントでログインして同期を確認します。
+
+## App Check
+
+- WebアプリはreCAPTCHA Enterprise Providerを使用します。
+- 許可ドメインは `haura900.github.io` です。
+- 正規リクエストがApp Checkメトリクスで検証済みになったことを確認してから、Cloud Firestore enforcementを有効にします。
+- ローカル開発用debug tokenはリポジトリへ保存しません。
 
 ## 確認項目
 

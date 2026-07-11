@@ -1,6 +1,62 @@
 export const CLOUD_CHUNK_SIZE = 600000;
 export const CLOUD_MAX_CHUNKS = 64;
 export const CLOUD_MAX_CHAR_LENGTH = CLOUD_CHUNK_SIZE * CLOUD_MAX_CHUNKS;
+export const CLOUD_SCHEMA_VERSION = 2;
+export const MAX_PROBLEMS_PER_USER = 10000;
+export const MAX_PROBLEM_PAYLOAD_CHARS = 750000;
+export const MAX_PROGRESS_PAYLOAD_CHARS = 200000;
+
+export function compareMutationVersion(left, right, timeField = "modifiedAt") {
+  const leftTime = Number(left?.[timeField] || 0);
+  const rightTime = Number(right?.[timeField] || 0);
+  if (leftTime !== rightTime) return leftTime > rightTime ? 1 : -1;
+  const leftMutation = String(left?.mutationId || "");
+  const rightMutation = String(right?.mutationId || "");
+  return leftMutation === rightMutation ? 0 : (leftMutation > rightMutation ? 1 : -1);
+}
+
+function chooseState(local, remote, timeField) {
+  if (!local) return remote || null;
+  if (!remote) return local;
+  return compareMutationVersion(local, remote, timeField) >= 0 ? local : remote;
+}
+
+export function chooseProblemState(local, remote) {
+  return chooseState(local, remote, "modifiedAt");
+}
+
+export function chooseProgressState(local, remote) {
+  return chooseState(local, remote, "answeredAt");
+}
+
+export function chooseSettingsState(local, remote) {
+  return chooseState(local, remote, "modifiedAt");
+}
+
+export function nextMutationVersion(previous, timeField = "modifiedAt", now = Date.now()) {
+  // LWWは端末時計を基準にする。同一端末では時計が戻っても、直前の変更時刻より必ず1ms進める。
+  const time = Math.max(Number(now) || 0, Number(previous?.[timeField] || 0) + 1);
+  return { [timeField]: time, mutationId: `${time}-${crypto.randomUUID()}` };
+}
+
+export function mergeStateMaps(localMap, remoteMap, chooser) {
+  const merged = {};
+  new Set([...Object.keys(localMap || {}), ...Object.keys(remoteMap || {})]).forEach((id) => {
+    merged[id] = chooser(localMap?.[id], remoteMap?.[id]);
+  });
+  return merged;
+}
+
+export function decomposeLegacySave(save) {
+  const problems = Array.isArray(save?.p) ? save.p : [];
+  const history = save?.h && typeof save.h === "object" && !Array.isArray(save.h) ? save.h : {};
+  if (problems.length > MAX_PROBLEMS_PER_USER) throw new Error("旧クラウドデータが10,000問を超えています");
+  return {
+    problems,
+    history,
+    settings: { reviewSettings: save?.s || {}, adminCount: Number(save?.a) || 10, genreOrder: Array.isArray(save?.g) ? save.g : [] },
+  };
+}
 
 export function decideStartupSync({ hasCloud, hasLocal, dirty, localRevision = 0, cloudRevision = 0, isInitialBinding = false }) {
   if (!hasCloud) return hasLocal ? "upload" : "synced";

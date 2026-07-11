@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   CLOUD_CHUNK_SIZE, decideStartupSync, splitEncodedSave, joinAndValidateChunks, shouldCacheActiveData,
+  compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState, mergeStateMaps, decomposeLegacySave,
 } from "../docs/cloud-sync-core.js";
 
 const hash = async (value) => createHash("sha256").update(value).digest("hex");
@@ -40,4 +41,38 @@ test("空データでユーザーキャッシュを上書きしない", () => {
   assert.equal(shouldCacheActiveData({}), false);
   assert.equal(shouldCacheActiveData({ history: "{}", problems: "[]" }), false);
   assert.equal(shouldCacheActiveData({ problems: '[{"id":"a"}]' }), true);
+});
+
+test("同時刻ではmutationIdで決定する", () => {
+  assert.equal(compareMutationVersion({ modifiedAt: 10, mutationId: "b" }, { modifiedAt: 10, mutationId: "a" }), 1);
+  assert.equal(chooseProblemState({ modifiedAt: 10, mutationId: "a" }, { modifiedAt: 11, mutationId: "a" }).modifiedAt, 11);
+  assert.equal(chooseProgressState({ answeredAt: 12, mutationId: "z" }, { answeredAt: 12, mutationId: "a" }).mutationId, "z");
+  assert.equal(chooseSettingsState({ modifiedAt: 1, mutationId: "a" }, { modifiedAt: 2, mutationId: "a" }).modifiedAt, 2);
+});
+
+for (const order of ["PC先行", "スマホ先行"]) {
+  test(`問題単位マージ: ${order}`, () => {
+    const pc = Object.fromEntries([1, 2, 3].map((id) => [String(id), { answeredAt: id === 3 ? 30 : 20, mutationId: `pc-${id}`, payload: `PC-${id}` }]));
+    const mobile = Object.fromEntries([3, 4, 5].map((id) => [String(id), { answeredAt: id === 3 ? 40 : 35, mutationId: `mobile-${id}`, payload: `スマホ-${id}` }]));
+    const merged = order === "PC先行"
+      ? mergeStateMaps(pc, mobile, chooseProgressState)
+      : mergeStateMaps(mobile, pc, chooseProgressState);
+    assert.deepEqual(Object.fromEntries(Object.entries(merged).map(([id, value]) => [id, value.payload])), {
+      "1": "PC-1", "2": "PC-2", "3": "スマホ-3", "4": "スマホ-4", "5": "スマホ-5",
+    });
+  });
+}
+
+test("tombstoneより古い状態では復活しない", () => {
+  const tombstone = { modifiedAt: 20, mutationId: "delete", deleted: true };
+  const stale = { modifiedAt: 19, mutationId: "edit", deleted: false };
+  assert.equal(chooseProblemState(stale, tombstone).deleted, true);
+});
+
+test("旧snapshot v5を問題・履歴・設定へ分解", () => {
+  const result = decomposeLegacySave({ v: 5, p: [{ id: "p1" }, { id: "p2" }], h: { p1: { attempts: [] } }, s: { first_correct_days: 7 }, a: 12 });
+  assert.equal(result.problems.length, 2);
+  assert.deepEqual(Object.keys(result.history), ["p1"]);
+  assert.equal(result.settings.adminCount, 12);
+  assert.throws(() => decomposeLegacySave({ p: Array.from({ length: 10001 }, (_, id) => ({ id })) }), /10,000/);
 });

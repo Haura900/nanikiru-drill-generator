@@ -53,4 +53,4 @@ powershell -ExecutionPolicy Bypass -File scripts/build_wasm.ps1
 
 ## 補足
 
-GitHub Pages ではアプリ本体を公開できますが、問題データはブラウザ内にだけ保存されます。公開用の暗号化ファイルやパスワード入力は使いません。
+ログインしていない場合は問題データをブラウザ内に保存します。Googleログイン時は、問題・問題別学習履歴・設定をFirebaseのユーザー専用領域へ同期します。バックアップはgzip圧縮とBase64化を行いますが、暗号化はしていません。

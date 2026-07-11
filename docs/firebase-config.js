@@ -7,6 +7,10 @@ export const firebaseConfig = {
   appId: "1:184978596740:web:78e83ceb6023598c3ff3d1",
 };
 
+export const appCheckConfig = {
+  recaptchaEnterpriseSiteKey: "6LeeDE4tAAAAANgjpK3EpYFILtJohCl6IjHfoa7V",
+};
+
 export function isFirebaseConfigured() {
   return Boolean(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
 }

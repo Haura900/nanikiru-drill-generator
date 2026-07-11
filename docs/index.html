@@ -2,6 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://www.google.com https://www.recaptcha.net; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google.com https://www.recaptcha.net; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.google.com https://recaptcha.google.com https://www.recaptcha.net; worker-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
   <link rel="stylesheet" href="style.css?v=20260711-1">
@@ -282,7 +283,7 @@
           </div>
         </div>
         
-        <div style="margin-top: 24px;">
+        <div class="data-output-section">
           <h3>データの出力</h3>
           <p>何切る問題・学習記録をまとめて出力します。</p>
           <div class="button-row">
@@ -290,14 +291,14 @@
             <button id="reset-all-data" type="button" class="danger">完全初期化</button>
           </div>
           <div id="export-message" class="message"></div>
-          <details style="margin-top: 16px;">
+          <details class="save-copy-details">
             <summary>セーブデータをコピー</summary>
-            <textarea id="base64-output" readonly style="width: 100%; height: 200px; margin-top: 12px; font-family: monospace; font-size: 12px;"></textarea>
-            <button id="copy-base64" type="button" style="margin-top: 8px;">コピー</button>
+            <textarea id="base64-output" class="save-output-text" readonly></textarea>
+            <button id="copy-base64" class="save-copy-button" type="button">コピー</button>
           </details>
         </div>
 
-        <hr style="margin: 32px 0;">
+        <hr class="data-section-divider">
 
         <div>
           <h3>データの復元</h3>
@@ -331,6 +332,8 @@
         <h3>データについて</h3>
         <p>ログインしていない場合、問題と学習記録はこのブラウザだけに保存されます。</p>
         <p>Googleでログインすると、問題・学習記録・復習設定がFirebase上のユーザー専用領域に保存され、同じGoogleアカウントを使用する端末間で同期されます。</p>
+        <p>同じ問題を複数端末で変更した場合は、端末に記録された変更時刻が新しい状態を採用します。端末時計が大きくずれていると判定に影響するため、各端末の日時を自動設定にしてください。</p>
+        <p>セーブデータは転送しやすい形式に圧縮していますが、暗号化はしていません。</p>
         <ul>
           <li>同じブラウザでも、保存先が違うと見えません</li>
           <li>ブラウザの保存領域を消すと失われます</li>

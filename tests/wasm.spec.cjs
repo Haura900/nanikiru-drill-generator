@@ -1,6 +1,8 @@
 const { test, expect } = require("@playwright/test");
 
 test("mahjong wasm runs in a browser", async ({ page }) => {
+  const cspViolations = [];
+  page.on("console", (message) => { if (/Content Security Policy|Refused to/i.test(message.text())) cspViolations.push(message.text()); });
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => new Promise((resolve, reject) => {
     const worker = new Worker("wasm/worker.js", { type: "module" });
@@ -33,6 +35,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
   expect(ranked[0].tile).toBe(16);
   expect(ranked[1].tile).toBe(17);
   expect(ranked[0].exp_score[6]).toBeCloseTo(1329.1878, 3);
+  expect(cspViolations).toEqual([]);
 });
 
 test("wasm worker is recycled without breaking analysis", async ({ page }) => {
@@ -367,4 +370,38 @@ test("save data is compressed and remains backward compatible", async ({ page })
   expect(result.encodedLength).toBeLessThan(result.legacyLength * 0.2);
   expect(result.restoredCount).toBe(80);
   expect(result.restoredLegacyCount).toBe(1);
+});
+
+test("restored text cannot create script or event attributes", async ({ page }) => {
+  const attacks = [
+    '<img src=x onerror="window.__xss=1">',
+    '"><svg onload="window.__xss=1">',
+    '</textarea><script>window.__xss=1</script>',
+  ];
+  await page.addInitScript(({ attacks }) => {
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "xss-safe-id", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m",
+      genre: attacks[0], note: attacks[1], prompt_note: attacks[2], created_at: new Date().toISOString(),
+      settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+  }, { attacks });
+  await page.goto("http://127.0.0.1:18765/");
+  await page.click('#nav button[data-view="manage"]');
+  await page.click('.problem-link');
+  expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+  expect(await page.locator("script:not([src]), [onerror], [onload]").count()).toBe(0);
+  await expect(page.locator("#preview-note")).toHaveValue(attacks[1]);
+  await expect(page.locator("#preview-prompt-note")).toHaveValue(attacks[2]);
+});
+
+test("invalid problem id in backup is rejected", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.waitForFunction(() => window.NanikiruSaveData);
+  const message = await page.evaluate(async () => {
+    try {
+      await window.NanikiruSaveData.applySaveData({ v: 6, p: [{ id: '<script>x</script>', hand: "123m", answers: ["1m"], genre: "x" }], h: {}, s: {}, a: 10, g: [] });
+      return "accepted";
+    } catch (error) { return error.message; }
+  });
+  expect(message).toContain("問題ID");
 });
