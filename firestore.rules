@@ -2,10 +2,83 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId}/{document=**} {
-      allow read, write:
-        if request.auth != null
-        && request.auth.uid == userId;
+    function signedInAs(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validCount(value) {
+      return value is int && value > 0 && value <= 64;
+    }
+
+    function validLength(value) {
+      return value is int && value > 0 && value <= 38400000;
+    }
+
+    function validHash(value) {
+      return value is string && value.matches('^[0-9a-f]{64}$');
+    }
+
+    function validDevice(value) {
+      return value is string && value.size() >= 8 && value.size() <= 128;
+    }
+
+    function validMeta(data) {
+      return data.keys().hasOnly([
+          'schemaVersion', 'saveVersion', 'snapshotId', 'chunkCount', 'charLength',
+          'sha256', 'revision', 'updatedAt', 'updatedBy'
+        ])
+        && data.schemaVersion == 1
+        && data.saveVersion == 5
+        && data.snapshotId is string
+        && data.snapshotId.size() > 0
+        && data.snapshotId.size() <= 160
+        && validCount(data.chunkCount)
+        && validLength(data.charLength)
+        && validHash(data.sha256)
+        && data.revision is int
+        && data.revision > 0
+        && validDevice(data.updatedBy)
+        && data.updatedAt == request.time;
+    }
+
+    function validSnapshot(data) {
+      return data.keys().hasOnly(['chunkCount', 'charLength', 'sha256', 'createdAt', 'createdBy'])
+        && validCount(data.chunkCount)
+        && validLength(data.charLength)
+        && validHash(data.sha256)
+        && validDevice(data.createdBy)
+        && data.createdAt == request.time;
+    }
+
+    match /users/{uid}/sync/meta {
+      allow read, delete: if signedInAs(uid);
+      allow create: if signedInAs(uid) && validMeta(request.resource.data) && request.resource.data.revision == 1;
+      allow update: if signedInAs(uid)
+        && validMeta(request.resource.data)
+        && request.resource.data.revision == resource.data.revision + 1;
+    }
+
+    match /users/{uid}/snapshots/{snapshotId} {
+      allow read, delete: if signedInAs(uid);
+      allow create: if signedInAs(uid) && validSnapshot(request.resource.data);
+      allow update: if false;
+    }
+
+    match /users/{uid}/snapshots/{snapshotId}/chunks/{chunkId} {
+      allow read, delete: if signedInAs(uid);
+      allow create: if signedInAs(uid)
+        && chunkId.matches('^[0-9]{6}$')
+        && request.resource.data.keys().hasOnly(['index', 'payload'])
+        && request.resource.data.index is int
+        && request.resource.data.index >= 0
+        && request.resource.data.index < 64
+        && request.resource.data.payload is string
+        && request.resource.data.payload.size() <= 600000;
+      allow update: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

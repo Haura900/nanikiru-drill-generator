@@ -1,15 +1,17 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import {
   getAuth, GoogleAuthProvider, browserLocalPersistence, setPersistence,
-  signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut as firebaseSignOut,
+  signInWithPopup, onAuthStateChanged, signOut as firebaseSignOut,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import {
   getFirestore, doc, collection, getDoc, getDocs, setDoc, deleteDoc,
   onSnapshot, runTransaction, serverTimestamp, query, orderBy,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js?v=20260711-1";
+import {
+  decideStartupSync, splitEncodedSave, joinAndValidateChunks, shouldCacheActiveData,
+} from "./cloud-sync-core.js?v=20260711-2";
 
-const CHUNK_SIZE = 600000;
 const CLOUD_REVISION_KEY = "nanikiru-cloud-revision-v1";
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
 const BOUND_UID_KEY = "nanikiru-bound-uid-v1";
@@ -23,6 +25,7 @@ let uploadTimer = null;
 let unsubscribeMeta = null;
 let applyingCloud = false;
 let changeVersion = 0;
+let conflictPromise = null;
 let initialAuthResolved;
 const initialAuthPromise = new Promise((resolve) => { initialAuthResolved = resolve; });
 
@@ -45,7 +48,10 @@ function messageFor(error) {
   console.error("Cloud sync:", error);
   if (!navigator.onLine) return "オフライン・未同期";
   if (error?.code === "permission-denied") return "同期の権限がありません。設定を確認してください";
-  if (error?.code?.startsWith?.("auth/")) return "Googleログインに失敗しました";
+  if (error?.code === "auth/unauthorized-domain") return "このドメインはGoogleログインを許可されていません";
+  if (error?.code === "auth/operation-not-allowed") return "FirebaseでGoogleログインが有効になっていません";
+  if (error?.code === "auth/network-request-failed") return "Googleログインの通信に失敗しました";
+  if (error?.code?.startsWith?.("auth/")) return `Googleログインに失敗しました（${error.code}）`;
   return error?.message ? `同期に失敗しました: ${error.message}` : "同期に失敗しました";
 }
 
@@ -66,12 +72,6 @@ async function sha256(text) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function splitEncodedSave(text) {
-  const chunks = [];
-  for (let i = 0; i < text.length; i += CHUNK_SIZE) chunks.push(text.slice(i, i + CHUNK_SIZE));
-  return chunks.length ? chunks : [""];
-}
-
 async function readMeta(uid) {
   const snap = await getDoc(metaRef(uid));
   return snap.exists() ? snap.data() : null;
@@ -85,30 +85,34 @@ async function downloadSnapshot(uid, meta = null) {
   const manifest = manifestSnap.data();
   if (manifest.chunkCount !== actualMeta.chunkCount || manifest.sha256 !== actualMeta.sha256) throw new Error("クラウドの保存情報が一致しません");
   const chunkSnaps = await getDocs(query(chunksRef(uid, actualMeta.snapshotId), orderBy("index")));
-  const chunks = chunkSnaps.docs.map((item) => item.data()).sort((a, b) => a.index - b.index);
-  if (chunks.length !== actualMeta.chunkCount || chunks.some((item, index) => item.index !== index || typeof item.payload !== "string")) {
-    throw new Error("クラウドデータの一部が不足しています");
+  const chunks = chunkSnaps.docs.map((item) => item.data());
+  if (manifest.chunkCount !== actualMeta.chunkCount || manifest.charLength !== actualMeta.charLength || manifest.sha256 !== actualMeta.sha256) {
+    throw new Error("クラウドの保存情報が一致しません");
   }
-  const encoded = chunks.map((item) => item.payload).join("");
-  if (encoded.length !== actualMeta.charLength || encoded.length !== manifest.charLength) throw new Error("クラウドデータの長さが一致しません");
-  if (await sha256(encoded) !== actualMeta.sha256) throw new Error("クラウドデータの検証に失敗しました");
+  const encoded = await joinAndValidateChunks(chunks, actualMeta, sha256);
   return { encoded, meta: actualMeta };
 }
 
 async function applyCloud(uid, meta = null) {
   emit({ syncing: true, status: "同期中", error: "" });
-  const downloaded = await downloadSnapshot(uid, meta);
-  if (!downloaded) return false;
-  const api = await waitForSaveApi();
-  applyingCloud = true;
   try {
+    const downloaded = await downloadSnapshot(uid, meta);
+    if (!downloaded) return false;
+    const api = await waitForSaveApi();
+    applyingCloud = true;
     await api.applyEncodedSave(downloaded.encoded, { source: "cloud", scheduleUpload: false });
     setRevision(downloaded.meta.revision);
     localStorage.setItem(BOUND_UID_KEY, uid);
     localStorage.removeItem(DIRTY_KEY);
     emit({ dirty: false, syncing: false, status: "同期済み", lastSync: new Date() });
-  } finally { applyingCloud = false; }
-  return true;
+    return true;
+  } catch (error) {
+    emit({ error: messageFor(error), status: "同期に失敗しました" });
+    throw error;
+  } finally {
+    applyingCloud = false;
+    emit({ syncing: false });
+  }
 }
 
 async function removeSnapshot(uid, snapshotId) {
@@ -116,6 +120,17 @@ async function removeSnapshot(uid, snapshotId) {
   const chunks = await getDocs(chunksRef(uid, snapshotId));
   await Promise.all(chunks.docs.map((item) => deleteDoc(item.ref)));
   await deleteDoc(snapshotRef(uid, snapshotId));
+}
+
+async function cleanupOrphanSnapshots(uid, activeSnapshotId) {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const snapshots = await getDocs(collection(db, "users", uid, "snapshots"));
+  const stale = snapshots.docs.filter((item) => {
+    if (item.id === activeSnapshotId) return false;
+    const created = item.data().createdAt?.toMillis?.();
+    return Number.isFinite(created) && created < cutoff;
+  });
+  await Promise.all(stale.map((item) => removeSnapshot(uid, item.id)));
 }
 
 async function uploadCurrent({ force = false } = {}) {
@@ -169,6 +184,7 @@ async function uploadCurrent({ force = false } = {}) {
       uploadTimer = setTimeout(() => uploadCurrent(), 1800);
     }
     if (before?.snapshotId && before.snapshotId !== createdSnapshotId) removeSnapshot(uid, before.snapshotId).catch(console.error);
+    cleanupOrphanSnapshots(uid, createdSnapshotId).catch(console.error);
     return true;
   } catch (error) {
     if (createdSnapshotId) removeSnapshot(uid, createdSnapshotId).catch(console.error);
@@ -179,16 +195,18 @@ async function uploadCurrent({ force = false } = {}) {
       emit({ syncing: false, status: navigator.onLine ? "同期に失敗しました" : "オフライン・未同期", error: messageFor(error), dirty: true });
     }
     return false;
+  } finally {
+    if (state.syncing) emit({ syncing: false });
   }
 }
 
 function scheduleUpload(reason = "変更") {
-  if (applyingCloud || !state.user) return;
+  if (applyingCloud) return;
   changeVersion++;
   clearTimeout(uploadTimer);
   localStorage.setItem(DIRTY_KEY, "1");
-  emit({ dirty: true, status: navigator.onLine ? "未同期の変更があります" : "オフライン・未同期", error: "" });
-  uploadTimer = setTimeout(() => uploadCurrent(), 1800);
+  emit({ dirty: true, status: state.user && navigator.onLine ? "未同期の変更があります" : (state.user ? "オフライン・未同期" : "ローカルに未同期の変更があります"), error: "" });
+  if (state.user && navigator.onLine) uploadTimer = setTimeout(() => uploadCurrent(), 1800);
 }
 
 async function syncNow() {
@@ -203,15 +221,11 @@ async function syncNow() {
 async function signIn() {
   if (!auth) return;
   const provider = new GoogleAuthProvider();
-  const mobile = matchMedia("(max-width: 700px)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   try {
-    if (mobile) return signInWithRedirect(auth, provider);
     await signInWithPopup(auth, provider);
   } catch (error) {
-    if (["auth/popup-blocked", "auth/popup-closed-by-user", "auth/cancelled-popup-request", "auth/operation-not-supported-in-this-environment"].includes(error.code)) {
-      return signInWithRedirect(auth, provider);
-    }
-    emit({ error: messageFor(error) });
+    const popupError = ["auth/popup-blocked", "auth/popup-closed-by-user", "auth/cancelled-popup-request", "auth/operation-not-supported-in-this-environment"].includes(error.code);
+    emit({ error: popupError ? `Googleログイン画面を開けませんでした（${error.code}）。ブラウザのポップアップを許可して、もう一度お試しください。` : messageFor(error) });
   }
 }
 
@@ -220,7 +234,7 @@ function cacheActive(uid) {
   if (!uid) return;
   const values = {};
   ACTIVE_KEYS.forEach((key) => { const value = localStorage.getItem(key); if (value !== null) values[key] = value; });
-  localStorage.setItem(cacheFor(uid), JSON.stringify(values));
+  if (shouldCacheActiveData(values)) localStorage.setItem(cacheFor(uid), JSON.stringify(values));
 }
 function clearActive() { ACTIVE_KEYS.forEach((key) => localStorage.removeItem(key)); }
 async function restoreCachedActive(uid) {
@@ -236,6 +250,9 @@ async function signOut() {
   cacheActive(state.user.uid);
   clearActive();
   setRevision(0);
+  localStorage.removeItem(BOUND_UID_KEY);
+  localStorage.removeItem(DIRTY_KEY);
+  emit({ dirty: false });
   await firebaseSignOut(auth);
   location.reload();
 }
@@ -303,6 +320,8 @@ async function showInitialChoice(meta) {
 
 async function showConflict(meta) {
   if (!meta) return;
+  if (conflictPromise) return conflictPromise;
+  conflictPromise = (async () => {
   const choice = await choiceModal({
     title: "別の端末でもデータが変更されています",
     body: "<p>この端末の未同期変更と、クラウドの変更が競合しています。</p>",
@@ -315,52 +334,39 @@ async function showConflict(meta) {
   });
   if (choice === "cloud") await applyCloud(state.user.uid, meta);
   if (choice === "local") { setRevision(Number(meta.revision || 0)); await uploadCurrent({ force: true }); }
+  })();
+  try { return await conflictPromise; }
+  finally { conflictPromise = null; }
 }
 
 async function handleSignedIn(user) {
   await waitForSaveApi();
   emit({ user, status: "クラウドを確認しています", error: "" });
   const bound = localStorage.getItem(BOUND_UID_KEY);
-  const switchedFrom = bound && bound !== user.uid ? bound : null;
-  if (bound && bound !== user.uid) {
+  const accountSwitched = Boolean(bound && bound !== user.uid);
+  if (accountSwitched) {
     cacheActive(bound);
     clearActive();
     setRevision(0);
+    localStorage.removeItem(DIRTY_KEY);
     await window.NanikiruSaveData.reload();
   }
   const meta = await readMeta(user.uid);
   const localHasData = window.NanikiruSaveData.hasMeaningfulLocalData();
   const persistedDirty = localStorage.getItem(DIRTY_KEY) === "1";
-  if (persistedDirty) emit({ dirty: true });
-  if (!meta && localHasData && (!bound || bound === user.uid)) await uploadCurrent({ force: true });
-  else if (meta && !localHasData) await applyCloud(user.uid, meta);
-  else if (meta && localHasData && (!bound || bound !== user.uid)) await showInitialChoice(meta);
-  else if (meta && localHasData && bound === user.uid && persistedDirty && Number(meta.revision || 0) === currentRevision()) await uploadCurrent();
-  else if (meta && localHasData && bound === user.uid && persistedDirty) await showConflict(meta);
-  else if (!meta && switchedFrom) {
-    const choice = await choiceModal({
-      title: "このGoogleアカウントにはクラウドデータがありません",
-      body: "<p>空の状態から始めます。前のアカウントで表示していたこの端末のデータを取り込むこともできます。</p>",
-      actions: [
-        { label: "空の状態から始める", value: "empty", className: "primary" },
-        { label: "この端末の以前のデータを取り込む", value: "import", confirm: "以前のアカウントのデータを、このGoogleアカウントへ保存しますか？" },
-      ],
-    });
-    if (choice === "import") {
-      await restoreCachedActive(switchedFrom);
-      setRevision(0);
-      await uploadCurrent({ force: true });
-    } else {
-      localStorage.setItem(BOUND_UID_KEY, user.uid);
-      emit({ status: "同期済み", dirty: false });
-    }
-  } else if (!meta) {
+  emit({ dirty: persistedDirty });
+  const action = decideStartupSync({
+    hasCloud: Boolean(meta), hasLocal: localHasData, dirty: persistedDirty,
+    localRevision: currentRevision(), cloudRevision: Number(meta?.revision || 0),
+    isInitialBinding: Boolean(meta && localHasData && !bound),
+  });
+  if (action === "upload") await uploadCurrent({ force: !meta });
+  else if (action === "download") await applyCloud(user.uid, meta);
+  else if (action === "choose") await showInitialChoice(meta);
+  else if (action === "conflict") await showConflict(meta);
+  else {
     localStorage.setItem(BOUND_UID_KEY, user.uid);
-    emit({ status: "同期済み", dirty: false });
-  } else {
-    localStorage.setItem(BOUND_UID_KEY, user.uid);
-    setRevision(Number(meta.revision || 0));
-    emit({ status: "同期済み", dirty: false, lastSync: new Date() });
+    emit({ status: "同期済み", dirty: false, lastSync: meta ? new Date() : null });
   }
   unsubscribeMeta?.();
   unsubscribeMeta = onSnapshot(metaRef(user.uid), async (snap) => {
@@ -370,6 +376,7 @@ async function handleSignedIn(user) {
     if (state.dirty) await showConflict(remote);
     else await applyCloud(user.uid, remote).catch((error) => emit({ error: messageFor(error), status: "同期に失敗しました" }));
   }, (error) => emit({ error: messageFor(error), status: "同期に失敗しました" }));
+  cleanupOrphanSnapshots(user.uid, meta?.snapshotId).catch(console.error);
 }
 
 function renderState() {
@@ -384,9 +391,11 @@ function renderState() {
   signedIn?.classList.toggle("hidden", !state.user);
   const intro = signedOut.querySelector("p");
   const login = document.getElementById("cloud-login-button");
+  if (login) login.disabled = !state.configured;
   if (!state.configured) {
     if (intro) intro.textContent = "クラウド同期は未設定です。";
-    if (login) login.disabled = true;
+  } else if (intro) {
+    intro.textContent = "Googleアカウントでログインすると、PCとスマートフォンで問題・成績・復習予定を同期できます。";
   }
   if (user) user.textContent = state.user ? `${state.user.displayName || "Googleユーザー"}${state.user.email ? `（${state.user.email}）` : ""}` : "";
   if (status) status.textContent = state.status;
@@ -413,12 +422,15 @@ async function initialize() {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app); db = getFirestore(app);
     await setPersistence(auth, browserLocalPersistence);
-    await getRedirectResult(auth).catch((error) => emit({ error: messageFor(error) }));
     emit({ configured: true, status: "ログインしていません" });
     onAuthStateChanged(auth, async (user) => {
       try {
         if (user) await handleSignedIn(user);
-        else { unsubscribeMeta?.(); unsubscribeMeta = null; emit({ user: null, dirty: false, syncing: false, status: "ログインしていません" }); }
+        else {
+          unsubscribeMeta?.(); unsubscribeMeta = null;
+          const localDirty = localStorage.getItem(DIRTY_KEY) === "1";
+          emit({ user: null, dirty: localDirty, syncing: false, status: localDirty ? "ローカルに未同期の変更があります" : "ログインしていません" });
+        }
       } catch (error) { emit({ user, syncing: false, error: messageFor(error), status: "同期に失敗しました" }); }
       if (!state.ready) { emit({ ready: true }); initialAuthResolved(); }
     });

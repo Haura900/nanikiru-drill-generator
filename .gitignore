@@ -7,3 +7,8 @@ vendor/mahjong-cpp/
 /wasm/build/
 /node_modules/
 /test-results/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+firestore-debug.*.log
+.firebase/
