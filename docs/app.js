@@ -5,6 +5,11 @@ const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
 const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
 const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
 const GENRE_ORDER_KEY = "nanikiru-genre-order-v1";
+const MAX_BACKUP_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_DECOMPRESSED_BACKUP_BYTES = 100 * 1024 * 1024;
+const MAX_BACKUP_TEXT_CHARS = MAX_DECOMPRESSED_BACKUP_BYTES;
+const MAX_BACKUP_BASE64_CHARS = Math.ceil(MAX_BACKUP_FILE_BYTES * 4 / 3) + 16;
+const MANAGEMENT_PAGE_SIZE = 200;
 let suppressCloudUpload = false;
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
@@ -36,6 +41,8 @@ let reviewSkippedThisSession = false;
 let managementSort = { key: "created_at", direction: "desc" };
 let managementSortBound = false;
 let selectedManagedProblemId = null;
+let managementPage = 0;
+const selectedManagementIds = new Set();
 let wasmActiveRequestKey = null;
 let wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
 let lastWasmMode = null;
@@ -124,7 +131,7 @@ function showReviewQuestion() {
 }
 
 function refreshGenres() {
-  renderGenreQuizTable();
+  if (currentView === "quiz") renderGenreQuizTable();
   const suggestions = $("genre-suggestions");
   if (suggestions) {
     suggestions.innerHTML = genresInRegistrationOrder()
@@ -159,19 +166,27 @@ function renderGenreQuizTable() {
   const target = $("genre-quiz-rows");
   if (!target) return;
   const history = loadHistory();
+  const summaries = new Map();
+  problems.forEach((problem) => {
+    const genre = problem.genre || "未分類";
+    const summary = summaries.get(genre) || { total: 0, unseen: 0, attempts: 0, correct: 0 };
+    const attempts = history[problem.id]?.attempts || [];
+    summary.total += 1;
+    if (!attempts.length) summary.unseen += 1;
+    summary.attempts += attempts.length;
+    summary.correct += attempts.reduce((count, attempt) => count + (attempt.correct ? 1 : 0), 0);
+    summaries.set(genre, summary);
+  });
   target.innerHTML = genresInRegistrationOrder().map((genre) => {
-    const matching = problems.filter((problem) => (problem.genre || "未分類") === genre);
-    const unseen = matching.filter((problem) => !history[problem.id]?.attempts?.length);
-    const attempts = matching.flatMap((problem) => history[problem.id]?.attempts || []);
-    const correct = attempts.filter((attempt) => attempt.correct).length;
-    const accuracy = attempts.length ? `${Math.round(correct / attempts.length * 100)}%` : "未回答";
+    const summary = summaries.get(genre) || { total: 0, unseen: 0, attempts: 0, correct: 0 };
+    const accuracy = summary.attempts ? `${Math.round(summary.correct / summary.attempts * 100)}%` : "未回答";
     return `<tr>
       <td>
         <strong>${escapeHtml(genre)}</strong>
-        <small>全${matching.length}問</small>
+        <small>全${summary.total}問</small>
       </td>
-      <td><b>${unseen.length}</b>問</td>
-      <td>${accuracy}<small>${attempts.length ? `${correct}/${attempts.length}` : ""}</small></td>
+      <td><b>${summary.unseen}</b>問</td>
+      <td>${accuracy}<small>${summary.attempts ? `${summary.correct}/${summary.attempts}` : ""}</small></td>
       <td><button type="button" class="primary start-genre" data-genre="${escapeHtml(genre)}">出題</button></td>
     </tr>`;
   }).join("") || `<tr><td colspan="4">登録済みの問題がありません。</td></tr>`;
@@ -427,8 +442,8 @@ function loadHistory() {
 function repairReviewHistoryDueDates() {
   const history = loadHistory();
   const reviewSettings = loadReviewSettings();
-  let changed = false;
-  activeHistoryEntries(history).forEach(([, state]) => {
+  const changedIds = [];
+  activeHistoryEntries(history).forEach(([problemId, state]) => {
     const attempts = state?.attempts || [];
     if (attempts.length < 2) return;
     const last = attempts[attempts.length - 1];
@@ -440,11 +455,11 @@ function repairReviewHistoryDueDates() {
     if (Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) > 0.01) return;
     const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
     state.dueAt = last.at + fixedDelayDays * DAY;
-    changed = true;
+    changedIds.push(problemId);
   });
-  if (changed) {
+  if (changedIds.length) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    activeHistoryEntries(history).forEach(([problemId]) => markProgressDirty(problemId, "復習予定を修正"));
+    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を修正"));
   }
 }
 
@@ -901,7 +916,6 @@ async function loadProblems() {
   problems.forEach((problem) => delete problem.genre_order);
   refreshGenres();
   repairReviewHistoryDueDates();
-  renderAdminProblems();
 }
 
 async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
@@ -991,7 +1005,7 @@ function bindAdmin() {
   $("admin-tolerance").addEventListener("input", updateToleranceHint);
   $("admin-count").addEventListener("input", saveAdminCount);
   ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
-    .forEach((id) => $(id).addEventListener("input", renderAdminProblems));
+    .forEach((id) => $(id).addEventListener("input", () => { managementPage = 0; renderAdminProblems(); }));
   $("select-filtered-button").addEventListener("click", selectFilteredProblems);
   $("bulk-delete-button").addEventListener("click", bulkDeleteProblems);
   $("bulk-genre-button").addEventListener("click", bulkChangeGenre);
@@ -1002,6 +1016,8 @@ function bindAdmin() {
     })
   );
   bindManagementSortControls();
+  $("management-prev")?.addEventListener("click", () => { managementPage = Math.max(0, managementPage - 1); renderAdminProblems(); });
+  $("management-next")?.addEventListener("click", () => { managementPage += 1; renderAdminProblems(); });
   updateToleranceHint();
 }
 
@@ -1453,7 +1469,7 @@ async function registerProblems(records) {
     }
   });
   if (changedIds.length) await saveProblems({ changedIds });
-  renderAdminProblems();
+  if (currentView === "manage") renderAdminProblems();
   refreshGenres();
 }
 
@@ -1651,7 +1667,6 @@ function renderAdminProblems() {
   if (problemCount) problemCount.textContent = `${problems.length}問`;
   const manageProblemCount = $("manage-problem-count");
   if (manageProblemCount) manageProblemCount.textContent = `${problems.length}問`;
-  refreshGenres();
   const genres = genresInRegistrationOrder();
   const genreFilter = $("manage-genre-filter");
   if (!genreFilter) return;
@@ -1685,12 +1700,15 @@ function renderAdminProblems() {
     const haystack = `${problem.hand} ${(problem.answers || []).join(" ")} ${problem.genre} ${problem.note || ""} ${problem.prompt_note || ""}`.toLowerCase();
     return !text || haystack.includes(text);
   }), history, problemById);
-  managementRows.innerHTML = filteredManagementProblems.map((problem) => {
+  const pageCount = Math.max(1, Math.ceil(filteredManagementProblems.length / MANAGEMENT_PAGE_SIZE));
+  managementPage = Math.min(managementPage, pageCount - 1);
+  const visibleProblems = filteredManagementProblems.slice(managementPage * MANAGEMENT_PAGE_SIZE, (managementPage + 1) * MANAGEMENT_PAGE_SIZE);
+  managementRows.innerHTML = visibleProblems.map((problem) => {
     const source = problemById.get(problem.source_id);
     const selected = problem.id === selectedManagedProblemId;
     const state = history[problem.id];
     return `<tr data-id="${problem.id}" class="${selected ? "selected-problem-row" : ""}">
-      <td><input class="problem-select" type="checkbox" value="${problem.id}" ${selected ? "checked" : ""}></td>
+      <td><input class="problem-select" type="checkbox" value="${problem.id}" ${selectedManagementIds.has(problem.id) ? "checked" : ""}></td>
       <td><button class="problem-link" type="button" data-id="${problem.id}">${escapeHtml(problem.hand)}</button></td>
       <td>${escapeHtml(problem.genre || "未分類")}</td>
       <td>${formatDate(problem.created_at)}</td>
@@ -1699,6 +1717,9 @@ function renderAdminProblems() {
       <td>${source ? escapeHtml(source.hand) : "元問題"}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="7">登録済みの問題がありません。</td></tr>`;
+  document.querySelectorAll(".problem-select").forEach((input) => input.addEventListener("change", () => {
+    if (input.checked) selectedManagementIds.add(input.value); else selectedManagementIds.delete(input.value);
+  }));
   document.querySelectorAll(".problem-link").forEach((button) =>
     button.addEventListener("click", () => {
       selectedManagedProblemId = button.dataset.id;
@@ -1712,6 +1733,11 @@ function renderAdminProblems() {
     button.dataset.direction = active ? managementSort.direction : "";
     button.setAttribute("aria-sort", active ? (managementSort.direction === "asc" ? "ascending" : "descending") : "none");
   });
+  const pagination = $("management-pagination");
+  pagination?.classList.toggle("hidden", filteredManagementProblems.length <= MANAGEMENT_PAGE_SIZE);
+  if ($("management-page-info")) $("management-page-info").textContent = `${managementPage + 1} / ${pageCount}ページ（${filteredManagementProblems.length}問）`;
+  if ($("management-prev")) $("management-prev").disabled = managementPage === 0;
+  if ($("management-next")) $("management-next").disabled = managementPage >= pageCount - 1;
   renderGenreOrderEditor();
 }
 
@@ -1721,10 +1747,11 @@ function setAdminMessage(text, type) {
 }
 
 function selectedProblemIds() {
-  return [...document.querySelectorAll(".problem-select:checked")].map((input) => input.value);
+  return [...selectedManagementIds];
 }
 
 function selectFilteredProblems() {
+  filteredManagementProblems.forEach((problem) => selectedManagementIds.add(problem.id));
   document.querySelectorAll(".problem-select").forEach((input) => input.checked = true);
 }
 
@@ -1757,6 +1784,7 @@ async function applyBulkOperation(operation) {
     ? { deletedIds: [...ids] }
     : { changedIds: [...ids] });
   if (operation.action === "delete") [...ids].forEach((problemId) => markProgressDirty(problemId, "問題削除に伴う履歴削除", true));
+  ids.forEach((id) => selectedManagementIds.delete(id));
   renderAdminProblems();
   refreshGenres();
 }
@@ -2079,6 +2107,9 @@ async function restoreDump(event) {
   const file = event.target.files[0];
   if (!file) return;
   try {
+    if (file.size > MAX_BACKUP_FILE_BYTES) {
+      throw new Error("バックアップファイルのサイズが上限を超えています。");
+    }
     const text = await file.text();
     if (!confirm("バックアップの内容で復元します。クラウドにだけ存在する問題と履歴は削除扱いになります。続けますか？")) return;
     await applyEncodedSave(text, { source: "backup", scheduleUpload: true });
@@ -2235,7 +2266,7 @@ async function applySaveData(data, options = {}) {
     repairReviewHistoryDueDates();
     renderReviewSettings();
     renderAdminCount();
-    renderAdminProblems();
+    if (currentView === "manage") renderAdminProblems();
     refreshGenres();
     if (currentView === "stats") renderStats();
     if (currentView === "quiz") showGenreSelection();
@@ -2327,7 +2358,8 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
       localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || 10))));
       saveGenreOrder(settingsRecord.genreOrder, false);
     }
-    renderReviewSettings(); renderAdminCount(); renderAdminProblems(); refreshGenres();
+    renderReviewSettings(); renderAdminCount(); refreshGenres();
+    if (currentView === "manage") renderAdminProblems();
     if (currentView === "stats") renderStats();
   });
 }
@@ -2911,16 +2943,26 @@ function assetName(tile) {
 }
 
 async function decodeSaveData(text) {
+  if (typeof text !== "string" || text.length > MAX_BACKUP_TEXT_CHARS) {
+    throw new Error("バックアップのサイズが上限を超えています。");
+  }
   const value = text.trim();
   if (value.startsWith("NK3:")) {
-    const compressed = fromBase64(value.slice(4), true);
+    const payload = value.slice(4);
+    if (payload.length > MAX_BACKUP_BASE64_CHARS) throw new Error("バックアップファイルのサイズが上限を超えています。");
+    const compressed = fromBase64(payload, true);
+    if (compressed.byteLength > MAX_BACKUP_FILE_BYTES) throw new Error("バックアップファイルのサイズが上限を超えています。");
     const decoded = await decompressBytes(compressed);
-    return JSON.parse(new TextDecoder().decode(decoded));
+    const json = new TextDecoder().decode(decoded);
+    if (json.length > MAX_BACKUP_TEXT_CHARS) throw new Error("バックアップの展開後サイズが上限を超えています。");
+    return JSON.parse(json);
   }
   try {
     return JSON.parse(value);
   } catch {
+    if (value.length > MAX_BACKUP_BASE64_CHARS) throw new Error("バックアップファイルのサイズが上限を超えています。");
     const decoded = new TextDecoder().decode(fromBase64(value));
+    if (decoded.length > MAX_BACKUP_TEXT_CHARS) throw new Error("バックアップの展開後サイズが上限を超えています。");
     return JSON.parse(decoded);
   }
 }
@@ -2933,12 +2975,35 @@ async function compressBytes(bytes) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function decompressBytes(bytes) {
+async function decompressBytes(bytes, maxOutputBytes = MAX_DECOMPRESSED_BACKUP_BYTES) {
   if (typeof DecompressionStream === "undefined") {
     throw new Error("このブラウザはデータの復元に対応していません。ブラウザを最新版に更新してください。");
   }
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxOutputBytes) {
+        await reader.cancel("decompressed backup limit exceeded");
+        throw new Error("バックアップの展開後サイズが上限を超えています。");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error?.message === "バックアップの展開後サイズが上限を超えています。") throw error;
+    throw new Error("バックアップデータを展開できませんでした。");
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(total);
+  let offset = 0;
+  chunks.forEach((chunk) => { output.set(chunk, offset); offset += chunk.byteLength; });
+  return output;
 }
 
 function toBase64(bytes, urlSafe = false) {

@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const zlib = require("node:zlib");
 
 test("mahjong wasm runs in a browser", async ({ page }) => {
   const cspViolations = [];
@@ -370,6 +371,39 @@ test("save data is compressed and remains backward compatible", async ({ page })
   expect(result.encodedLength).toBeLessThan(result.legacyLength * 0.2);
   expect(result.restoredCount).toBe(80);
   expect(result.restoredLegacyCount).toBe(1);
+});
+
+test("oversized backup input and decompressed data are rejected", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.click('#nav button[data-view="export"]');
+  await page.setInputFiles("#restore-file", {
+    name: "too-large.txt", mimeType: "text/plain", buffer: Buffer.alloc(20 * 1024 * 1024 + 1),
+  });
+  await expect(page.locator("#restore-message")).toContainText("ファイルのサイズが上限を超えています");
+
+  const compressed = zlib.gzipSync(Buffer.alloc(2 * 1024 * 1024));
+  const message = await page.evaluate(async (base64) => {
+    try { await decompressBytes(fromBase64(base64, true), 1024 * 1024); return ""; }
+    catch (error) { return error.message; }
+  }, compressed.toString("base64url"));
+  expect(message).toContain("展開後サイズが上限を超えています");
+});
+
+test("management rows are lazy and paginated", async ({ page }) => {
+  await page.addInitScript(() => {
+    const problems = Array.from({ length: 450 }, (_, index) => ({
+      id: `lazy-${index}`, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: `分類${index % 4}`,
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }));
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify(problems));
+  });
+  await page.goto("http://127.0.0.1:18765/");
+  expect(await page.locator("#management-rows tr").count()).toBe(0);
+  await page.click('#nav button[data-view="manage"]');
+  expect(await page.locator("#management-rows tr").count()).toBe(200);
+  await expect(page.locator("#management-page-info")).toContainText("1 / 3ページ");
+  await page.click("#management-next");
+  await expect(page.locator("#management-page-info")).toContainText("2 / 3ページ");
 });
 
 test("restored text cannot create script or event attributes", async ({ page }) => {

@@ -46,16 +46,52 @@ test("payload上限と不正tombstoneを拒否", async () => {
   await assertSucceeds(setDoc(doc(db, "users/a/problems/p1"), problem("p1", { deleted: true, payload: "" })));
 });
 
-test("物理削除を拒否", async () => {
-  const db = env.authenticatedContext("a").firestore(); await assertSucceeds(setDoc(doc(db, "users/a/sync/catalog"), catalog(["p1"]))); const ref = doc(db, "users/a/problems/p1");
-  await assertSucceeds(setDoc(ref, problem("p1"))); await assertFails(deleteDoc(ref));
+test("本人だけが現行データを物理削除できる", async () => {
+  const db = env.authenticatedContext("a").firestore();
+  const refs = {
+    catalog: doc(db, "users/a/sync/catalog"), problem: doc(db, "users/a/problems/p1"), progress: doc(db, "users/a/progress/p1"),
+    settings: doc(db, "users/a/settings/main"), migration: doc(db, "users/a/migration/state"),
+  };
+  await assertSucceeds(setDoc(refs.catalog, catalog(["p1"])));
+  await assertSucceeds(setDoc(refs.problem, problem("p1")));
+  await assertSucceeds(setDoc(refs.progress, progress("p1")));
+  await env.withSecurityRulesDisabled(async (context) => {
+    const admin = context.firestore();
+    await setDoc(doc(admin, "users/a/settings/main"), { marker: true });
+    await setDoc(doc(admin, "users/a/migration/state"), { marker: true });
+  });
+  for (const ref of [refs.problem, refs.progress, refs.settings, refs.catalog, refs.migration]) await assertSucceeds(deleteDoc(ref));
+
+  await env.withSecurityRulesDisabled(async (context) => setDoc(doc(context.firestore(), "users/b/problems/p1"), { marker: true }));
+  await assertFails(deleteDoc(doc(db, "users/b/problems/p1")));
+  await assertFails(deleteDoc(doc(env.unauthenticatedContext().firestore(), "users/b/problems/p1")));
 });
 
-test("移行完了後は任意snapshot作成を拒否", async () => {
+test("旧snapshot領域はcreateとupdateを常に拒否する", async () => {
   const db = env.authenticatedContext("a").firestore();
-  await assertSucceeds(setDoc(doc(db, "users/a/snapshots/legacy"), { any: "legacy" }));
+  const paths = ["users/a/sync/meta", "users/a/snapshots/legacy", "users/a/snapshots/legacy/chunks/000000"];
+  for (const path of paths) await assertFails(setDoc(doc(db, path), { value: 1 }));
+  await env.withSecurityRulesDisabled(async (context) => {
+    for (const path of paths) await setDoc(doc(context.firestore(), path), { value: 1 });
+  });
+  for (const path of paths) await assertFails(setDoc(doc(db, path), { value: 2 }));
   await assertSucceeds(setDoc(doc(db, "users/a/migration/state"), { schemaVersion: 2, completed: true, problemCount: 0, progressCount: 0, updatedAt: serverTimestamp(), updatedBy: "device-12345678" }));
-  await assertFails(setDoc(doc(db, "users/a/snapshots/arbitrary"), { any: "blocked" }));
+  for (const path of paths) await assertFails(setDoc(doc(db, path), { value: 3 }));
+});
+
+test("本人だけが旧snapshotをread/deleteできる", async () => {
+  const paths = ["users/a/sync/meta", "users/a/snapshots/legacy", "users/a/snapshots/legacy/chunks/000000"];
+  await env.withSecurityRulesDisabled(async (context) => {
+    for (const path of paths) await setDoc(doc(context.firestore(), path), { value: 1 });
+  });
+  const ownerDb = env.authenticatedContext("a").firestore();
+  const otherDb = env.authenticatedContext("b").firestore();
+  for (const path of paths) {
+    await assertSucceeds(getDoc(doc(ownerDb, path)));
+    await assertFails(getDoc(doc(otherDb, path)));
+    await assertFails(deleteDoc(doc(otherDb, path)));
+  }
+  for (const path of [...paths].reverse()) await assertSucceeds(deleteDoc(doc(ownerDb, path)));
 });
 
 test("Transaction競合でも問題単位LWWになる", async () => {

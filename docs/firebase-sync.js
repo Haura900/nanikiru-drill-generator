@@ -2,7 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/fireba
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app-check.js";
 import { getAuth, GoogleAuthProvider, browserLocalPersistence, setPersistence, signInWithPopup, onAuthStateChanged, signOut as firebaseSignOut } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import {
-  getFirestore, doc, collection, getDoc, getDocs, setDoc, deleteDoc, onSnapshot,
+  getFirestore, doc, collection, getDoc, getDocs, setDoc, onSnapshot,
   runTransaction, serverTimestamp, query, orderBy, writeBatch,
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, appCheckConfig, isFirebaseConfigured } from "./firebase-config.js?v=20260712-1";
@@ -30,6 +30,8 @@ let uploadTimer;
 let applyingCloud = false;
 let syncPromise = null;
 let subscriptions = [];
+const pendingRemote = { problems: new Map(), progress: new Map(), settings: null };
+let remoteFlushTimer = null;
 let initialAuthResolved;
 const initialAuthPromise = new Promise((resolve) => { initialAuthResolved = resolve; });
 
@@ -218,9 +220,59 @@ async function applyRemoteRecords(record, type) {
 
 function subscribeRealtime(uid) {
   subscriptions.forEach((unsubscribe) => unsubscribe()); subscriptions = [];
-  subscriptions.push(onSnapshot(collection(db, "users", uid, "problems"), (snapshot) => snapshot.docChanges().forEach((change) => { if (change.type !== "removed") applyRemoteRecords(change.doc.data(), "problem").catch(handleError); }), handleError));
-  subscriptions.push(onSnapshot(collection(db, "users", uid, "progress"), (snapshot) => snapshot.docChanges().forEach((change) => { if (change.type !== "removed") applyRemoteRecords(change.doc.data(), "progress").catch(handleError); }), handleError));
-  subscriptions.push(onSnapshot(settingsRef(uid), (snapshot) => { if (snapshot.exists()) applyRemoteRecords(snapshot.data(), "settings").catch(handleError); }, handleError));
+  const scheduleRemoteFlush = () => {
+    if (remoteFlushTimer !== null) return;
+    remoteFlushTimer = setTimeout(() => {
+      remoteFlushTimer = null;
+      flushRemoteRecords().catch(handleError);
+    }, 16);
+  };
+  subscriptions.push(onSnapshot(collection(db, "users", uid, "problems"), (snapshot) => {
+    snapshot.docChanges().forEach((change) => { if (change.type !== "removed") pendingRemote.problems.set(change.doc.id, change.doc.data()); });
+    scheduleRemoteFlush();
+  }, handleError));
+  subscriptions.push(onSnapshot(collection(db, "users", uid, "progress"), (snapshot) => {
+    snapshot.docChanges().forEach((change) => { if (change.type !== "removed") pendingRemote.progress.set(change.doc.id, change.doc.data()); });
+    scheduleRemoteFlush();
+  }, handleError));
+  subscriptions.push(onSnapshot(settingsRef(uid), (snapshot) => {
+    if (snapshot.exists()) { pendingRemote.settings = snapshot.data(); scheduleRemoteFlush(); }
+  }, handleError));
+}
+
+async function flushRemoteRecords() {
+  const problemRecords = [...pendingRemote.problems.values()];
+  const progressRecords = [...pendingRemote.progress.values()];
+  const settings = pendingRemote.settings;
+  pendingRemote.problems.clear(); pendingRemote.progress.clear(); pendingRemote.settings = null;
+  if (!problemRecords.length && !progressRecords.length && !settings) return;
+  const api = await waitForSaveApi();
+  const problemVersions = readObject(PROBLEM_VERSIONS_KEY); const progressVersions = readObject(PROGRESS_VERSIONS_KEY);
+  const dirtyProblems = readObject(DIRTY_PROBLEMS_KEY); const dirtyProgress = readObject(DIRTY_PROGRESS_KEY);
+  const acceptedProblems = []; const acceptedProgress = [];
+  problemRecords.forEach((record) => {
+    if (compareMutationVersion(record, problemVersions[record.problemId], "modifiedAt") < 0) return;
+    acceptedProblems.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
+    problemVersions[record.problemId] = { modifiedAt: record.modifiedAt, mutationId: record.mutationId };
+    if (dirtyProblems[record.problemId] && compareMutationVersion(record, dirtyProblems[record.problemId], "modifiedAt") >= 0) delete dirtyProblems[record.problemId];
+  });
+  progressRecords.forEach((record) => {
+    if (compareMutationVersion(record, progressVersions[record.problemId], "answeredAt") < 0) return;
+    acceptedProgress.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
+    progressVersions[record.problemId] = { answeredAt: record.answeredAt, mutationId: record.mutationId };
+    if (dirtyProgress[record.problemId] && compareMutationVersion(record, dirtyProgress[record.problemId], "answeredAt") >= 0) delete dirtyProgress[record.problemId];
+  });
+  let settingsRecord = null;
+  if (settings && compareMutationVersion(settings, readObject(SETTINGS_VERSION_KEY), "modifiedAt") >= 0) {
+    settingsRecord = { reviewSettings: settings.reviewSettings, adminCount: settings.adminCount, genreOrder: settings.genreOrder };
+  }
+  applyingCloud = true;
+  try {
+    await api.applyCloudRecords({ problemRecords: acceptedProblems, progressRecords: acceptedProgress, settingsRecord });
+    writeObject(PROBLEM_VERSIONS_KEY, problemVersions); writeObject(PROGRESS_VERSIONS_KEY, progressVersions);
+    writeObject(DIRTY_PROBLEMS_KEY, dirtyProblems); writeObject(DIRTY_PROGRESS_KEY, dirtyProgress);
+    if (settingsRecord) writeObject(SETTINGS_VERSION_KEY, { modifiedAt: settings.modifiedAt, mutationId: settings.mutationId });
+  } finally { applyingCloud = false; }
 }
 
 async function sha256(text) {
@@ -270,6 +322,7 @@ async function signIn() {
 
 async function signOut() {
   if (!state.user) return;
+  // 通常のログアウトでは、同期なしでも再利用できるようUID別キャッシュを残す。
   const cache = {}; ACTIVE_KEYS.forEach((key) => { const value = localStorage.getItem(key); if (value !== null) cache[key] = value; });
   localStorage.setItem(`nanikiru-user-cache-v2:${state.user.uid}`, JSON.stringify(cache));
   [...ACTIVE_KEYS, BOUND_UID_KEY, DIRTY_PROBLEMS_KEY, DIRTY_PROGRESS_KEY, DIRTY_SETTINGS_KEY, PROBLEM_VERSIONS_KEY, PROGRESS_VERSIONS_KEY, SETTINGS_VERSION_KEY, REPLACE_CLOUD_KEY].forEach((key) => localStorage.removeItem(key));
@@ -279,11 +332,25 @@ async function signOut() {
 async function deleteCloudData() {
   if (!state.user) return;
   const uid = state.user.uid;
+  const deleteReferences = async (references) => {
+    for (let offset = 0; offset < references.length; offset += 400) {
+      const batch = writeBatch(db);
+      references.slice(offset, offset + 400).forEach((reference) => batch.delete(reference));
+      await batch.commit();
+    }
+  };
   for (const name of ["problems", "progress"]) {
     const snapshot = await getDocs(collection(db, "users", uid, name));
-    for (let offset = 0; offset < snapshot.docs.length; offset += 400) { const batch = writeBatch(db); snapshot.docs.slice(offset, offset + 400).forEach((item) => batch.delete(item.ref)); await batch.commit(); }
+    await deleteReferences(snapshot.docs.map((item) => item.ref));
   }
-  for (const ref of [catalogRef(uid), settingsRef(uid), migrationRef(uid)]) await deleteDoc(ref).catch(() => {});
+  const legacySnapshots = await getDocs(collection(db, "users", uid, "snapshots"));
+  for (const snapshotDocument of legacySnapshots.docs) {
+    const chunks = await getDocs(collection(db, "users", uid, "snapshots", snapshotDocument.id, "chunks"));
+    await deleteReferences(chunks.docs.map((item) => item.ref));
+  }
+  await deleteReferences(legacySnapshots.docs.map((item) => item.ref));
+  // 現行メタデータと旧metaは、子データを消した後に削除する。
+  await deleteReferences([catalogRef(uid), settingsRef(uid), migrationRef(uid), doc(db, "users", uid, "sync", "meta")]);
 }
 
 function handleError(error) { emit({ error: messageFor(error), status: navigator.onLine ? "同期に失敗しました" : "オフライン・未同期", syncing: false }); }
