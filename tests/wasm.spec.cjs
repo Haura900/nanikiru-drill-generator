@@ -406,6 +406,26 @@ test("management rows are lazy and paginated", async ({ page }) => {
   await expect(page.locator("#management-page-info")).toContainText("2 / 3ページ");
 });
 
+test("quiz shows total unseen count and random-mode remaining count", async ({ page }) => {
+  await page.addInitScript(() => {
+    const makeProblem = (id, genre) => ({
+      id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre,
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    });
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([
+      makeProblem("count-a", "分類A"), makeProblem("count-b", "分類A"), makeProblem("count-c", "分類B"),
+    ]));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      "count-c": { attempts: [{ at: Date.now() - 1000, correct: true }], dueAt: Date.now() + 86400000 },
+    }));
+  });
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator(".genre-total-row")).toContainText("合計");
+  await expect(page.locator(".genre-total-row")).toContainText("2問");
+  await page.click("#random-question");
+  await expect(page.locator("#question-status")).toContainText("残り 1問");
+});
+
 test("restored text cannot create script or event attributes", async ({ page }) => {
   const attacks = [
     '<img src=x onerror="window.__xss=1">',

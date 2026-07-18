@@ -177,7 +177,7 @@ function renderGenreQuizTable() {
     summary.correct += attempts.reduce((count, attempt) => count + (attempt.correct ? 1 : 0), 0);
     summaries.set(genre, summary);
   });
-  target.innerHTML = genresInRegistrationOrder().map((genre) => {
+  const genreRows = genresInRegistrationOrder().map((genre) => {
     const summary = summaries.get(genre) || { total: 0, unseen: 0, attempts: 0, correct: 0 };
     const accuracy = summary.attempts ? `${Math.round(summary.correct / summary.attempts * 100)}%` : "未回答";
     return `<tr>
@@ -189,14 +189,23 @@ function renderGenreQuizTable() {
       <td>${accuracy}<small>${summary.attempts ? `${summary.correct}/${summary.attempts}` : ""}</small></td>
       <td><button type="button" class="primary start-genre" data-genre="${escapeHtml(genre)}">出題</button></td>
     </tr>`;
-  }).join("") || `<tr><td colspan="4">登録済みの問題がありません。</td></tr>`;
+  }).join("");
+  const totalUnseen = [...summaries.values()].reduce((total, summary) => total + summary.unseen, 0);
+  target.innerHTML = genreRows
+    ? `${genreRows}<tr class="genre-total-row">
+        <td><strong>合計</strong><small>全${problems.length}問</small></td>
+        <td><b>${totalUnseen}</b>問</td>
+        <td></td>
+        <td></td>
+      </tr>`
+    : `<tr><td colspan="4">登録済みの問題がありません。</td></tr>`;
   document.querySelectorAll(".start-genre").forEach((button) => {
     button.addEventListener("click", () => startGenreQuestion(button.dataset.genre));
   });
   const due = dueReviewProblems(history);
   $("review-due-count").textContent = `復習 ${due.length}問`;
   $("review-question").disabled = due.length === 0;
-  $("random-question").disabled = problems.length === 0;
+  $("random-question").disabled = totalUnseen === 0;
 }
 
 function startGenreQuestion(genre) {
@@ -311,6 +320,10 @@ function questionTileMarkers(tile, settings = {}) {
 
 function renderQuestionStatus(problem, state) {
   const attemptText = state?.attempts?.length ? `出題 ${state.attempts.length}回目` : "初見";
+  if (currentQuizContext?.mode === "random") {
+    const remaining = Math.max(0, unseenProblems().filter((item) => item.id !== problem.id).length);
+    return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
+  }
   if (currentQuizContext?.mode !== "review") return escapeHtml(attemptText);
   const remaining = Math.max(0, dueReviewProblems().filter((item) => item.id !== problem.id).length);
   return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
