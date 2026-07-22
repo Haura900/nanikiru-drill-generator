@@ -90,8 +90,6 @@ test("problem editor defaults to graphical tile input", async ({ page }) => {
   await page.locator("#dora-picker .picker-tile[data-tile='4p']").click();
   await expect(page.locator("#admin-dora")).toHaveValue("4p");
   await expect(page.locator("#dora-preview img")).toHaveCount(1);
-  expect(await page.evaluate(() => toleranceInputValue(0.0001))).toBe("0.0002");
-  expect(await page.evaluate(() => toleranceInputValue(0.00001))).toBe("0.0001");
 });
 
 test("red fives can be entered and keep their identity", async ({ page }) => {
@@ -299,7 +297,6 @@ test("similar-problem generation uses the browser simulator path", async ({ page
     document.querySelector("#admin-hand").value = "45m2344779p23368s";
     document.querySelector("#admin-answer").value = "9p";
     document.querySelector("#admin-count").value = "2";
-    document.querySelector("#admin-tolerance").value = "0";
     let registered = [];
     window.analyzeWithWasm = async (handText, melds, payload) => ({
       version: "test-wasm",
@@ -328,6 +325,55 @@ test("similar-problem generation uses the browser simulator path", async ({ page
   expect(result.registered).toHaveLength(3);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
   expect(result.message).toContain("2問を登録");
+});
+
+test("similar-problem conditions use source tolerance, rank and fixed next-worse rank", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const simulation = (metrics) => ({
+      rows: metrics.map(([tile, metric]) => ({ tile, metric, expected_score: metric })),
+    });
+    const sourceSimulation = simulation([["1m", 100], ["2m", 90], ["3m", 83], ["4m", 70]]);
+    const sourceGaps = calculateAnswerGaps(sourceSimulation, ["2m"]);
+    const sourceAnswerConditions = calculateAnswerConditions(sourceSimulation, ["2m"]);
+    const sourceConditions = {
+      tolerance_percent: Math.max(...Object.values(sourceGaps)),
+      max_rank: sourceAnswerConditions.max_rank,
+      next_worse_rank: sourceAnswerConditions.max_rank + 1,
+      next_worse_gap_percent: sourceAnswerConditions.next_worse_gap_percent,
+    };
+    const accepted = evaluateSimilarProblem(
+      simulation([["2m", 100], ["1m", 95], ["3m", 92], ["4m", 70]]),
+      ["2m"],
+      sourceConditions
+    );
+    const rejectedBySeparation = evaluateSimilarProblem(
+      simulation([["2m", 100], ["1m", 99], ["3m", 94], ["4m", 70]]),
+      ["2m"],
+      sourceConditions
+    );
+    const rejectedByRank = evaluateSimilarProblem(
+      simulation([["1m", 100], ["3m", 95], ["2m", 90], ["4m", 70]]),
+      ["2m"],
+      sourceConditions
+    );
+    const tiedAnswers = calculateAnswerConditions(
+      simulation([["1m", 100], ["2m", 100], ["3m", 90]]),
+      ["1m", "2m"]
+    );
+    return { sourceConditions, accepted, rejectedBySeparation, rejectedByRank, tiedAnswers };
+  });
+  expect(result.sourceConditions.tolerance_percent).toBeCloseTo(10, 8);
+  expect(result.sourceConditions.max_rank).toBe(2);
+  expect(result.sourceConditions.next_worse_rank).toBe(3);
+  expect(result.sourceConditions.next_worse_gap_percent).toBeCloseTo(7.7777777778, 8);
+  expect(result.accepted.accepted).toBe(true);
+  expect(result.accepted.conditions.max_rank).toBe(1);
+  expect(result.accepted.conditions.comparison_rank).toBe(3);
+  expect(result.rejectedBySeparation.separation_accepted).toBe(false);
+  expect(result.rejectedByRank.rank_accepted).toBe(false);
+  expect(result.tiedAnswers.max_rank).toBe(1);
+  expect(result.tiedAnswers.next_worse_gap_percent).toBeCloseTo(10, 8);
 });
 
 test("save data is compressed and remains backward compatible", async ({ page }) => {

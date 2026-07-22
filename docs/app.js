@@ -1015,7 +1015,6 @@ function bindAdmin() {
   $("verify-button").addEventListener("click", verifyWithWasm);
   $("save-button").addEventListener("click", saveCurrentProblem);
   $("generate-button").addEventListener("click", generateWithWasm);
-  $("admin-tolerance").addEventListener("input", updateToleranceHint);
   $("admin-count").addEventListener("input", saveAdminCount);
   ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
     .forEach((id) => $(id).addEventListener("input", () => { managementPage = 0; renderAdminProblems(); }));
@@ -1031,7 +1030,6 @@ function bindAdmin() {
   bindManagementSortControls();
   $("management-prev")?.addEventListener("click", () => { managementPage = Math.max(0, managementPage - 1); renderAdminProblems(); });
   $("management-next")?.addEventListener("click", () => { managementPage += 1; renderAdminProblems(); });
-  updateToleranceHint();
 }
 
 function bindManagementSortControls() {
@@ -1141,11 +1139,6 @@ function hideBackupPrompt() {
 async function saveCurrentProblem() {
   try {
     const verification = await runWasmVerification();
-    if (!verification.is_accepted) {
-      throw new Error(
-        `指定解答には${formatPercent(verification.required_tolerance_percent)}%の許容乖離率が必要です。`
-      );
-    }
     const problem = manualProblemFromForm(verification);
     await registerProblem(problem);
     setAdminMessage("問題を保存しました。", "ok");
@@ -1178,7 +1171,7 @@ function manualProblemFromForm(verification = null) {
     melds_text: payload.melds.trim(),
     answers: [...new Set(answers)],
     primary_answer: answers[0],
-    tolerance_percent: payload.tolerance_percent,
+    tolerance_percent: verification?.required_tolerance_percent || 0,
     note: payload.note,
     prompt_note: payload.prompt_note,
     source_id: null,
@@ -1192,6 +1185,7 @@ function manualProblemFromForm(verification = null) {
       objective: 2,
     },
     answer_gaps: verification?.answer_gaps || {},
+    similarity_conditions: verification?.similarity_conditions || null,
     simulator: verification?.simulation || null,
     unverified: !verification,
   };
@@ -1201,8 +1195,6 @@ async function verifyWithWasm() {
   setAdminMessage("シミュレーターを実行しています。", "busy");
   try {
     const verification = await runWasmVerification();
-    $("admin-tolerance").value = toleranceInputValue(verification.required_tolerance_percent);
-    updateToleranceHint();
     renderVerification(verification);
     setAdminMessage(
       verification.is_optimal
@@ -1232,6 +1224,13 @@ async function runWasmVerification() {
   const simulation = await analyzeWithWasm(payload.hand, melds, payload);
   const answerGaps = calculateAnswerGaps(simulation, answers);
   const required = Math.max(...Object.values(answerGaps));
+  const answerConditions = calculateAnswerConditions(simulation, answers);
+  const similarityConditions = {
+    tolerance_percent: required,
+    max_rank: answerConditions.max_rank,
+    next_worse_rank: answerConditions.max_rank + 1,
+    next_worse_gap_percent: answerConditions.next_worse_gap_percent,
+  };
   return {
     hand: tilesToMpszClient(hand),
     answers,
@@ -1240,10 +1239,11 @@ async function runWasmVerification() {
     melds,
     melds_text: melds.map((meld) => meld.mpsz).join(" "),
     is_optimal: required <= 1e-9,
-    is_accepted: required <= payload.tolerance_percent + 1e-9,
+    is_accepted: true,
     answer_gaps: answerGaps,
     required_tolerance_percent: required,
-    allowed_tolerance_percent: payload.tolerance_percent,
+    allowed_tolerance_percent: required,
+    similarity_conditions: similarityConditions,
     simulation,
   };
 }
@@ -1280,6 +1280,68 @@ function calculateAnswerGaps(simulation, answers) {
     answerGaps[answer] = Math.max(0, (best - answerMetric) / Math.max(Math.abs(best), 1e-12) * 100);
   });
   return answerGaps;
+}
+
+function rankedDiscardRows(simulation) {
+  const byTile = new Map();
+  (simulation?.rows || []).forEach((row) => {
+    const tile = normalizePhysicalTile(row.tile);
+    const current = byTile.get(tile);
+    if (!current || Number(row.metric) > Number(current.metric)) byTile.set(tile, { ...row, tile });
+  });
+  const rows = [...byTile.values()].sort((left, right) => Number(right.metric) - Number(left.metric));
+  let rank = 0;
+  let previousMetric = null;
+  return rows.map((row) => {
+    const metric = Number(row.metric);
+    const tied = previousMetric !== null
+      && Math.abs(metric - previousMetric) <= Math.max(1e-9, Math.abs(previousMetric) * 1e-10);
+    if (!tied) rank += 1;
+    previousMetric = metric;
+    return { ...row, rank };
+  });
+}
+
+function calculateAnswerConditions(simulation, answers, boundaryRank = null) {
+  const ranked = rankedDiscardRows(simulation);
+  const answerRows = answers.map((answer) => {
+    const row = ranked.find((item) => samePhysicalTile(item.tile, answer));
+    if (!row) throw new Error(`打牌候補にありません: ${answer}`);
+    return row;
+  });
+  const maxRank = Math.max(...answerRows.map((row) => row.rank));
+  const comparisonRank = boundaryRank || maxRank + 1;
+  const boundary = ranked.find((row) => row.rank === comparisonRank) || null;
+  const worstAnswerMetric = Math.min(...answerRows.map((row) => Number(row.metric)));
+  const nextWorseGap = boundary
+    ? Math.max(0, (worstAnswerMetric - Number(boundary.metric)) / Math.max(Math.abs(worstAnswerMetric), 1e-12) * 100)
+    : null;
+  return {
+    max_rank: maxRank,
+    comparison_rank: comparisonRank,
+    next_worse_gap_percent: nextWorseGap,
+    boundary_tile: boundary?.tile || null,
+  };
+}
+
+function evaluateSimilarProblem(simulation, answers, sourceConditions) {
+  const answerGaps = calculateAnswerGaps(simulation, answers);
+  const maxGap = Math.max(...Object.values(answerGaps));
+  const conditions = calculateAnswerConditions(simulation, answers, sourceConditions.next_worse_rank);
+  const toleranceAccepted = maxGap <= sourceConditions.tolerance_percent + 1e-9;
+  const rankAccepted = conditions.max_rank <= sourceConditions.max_rank;
+  const separationAccepted = sourceConditions.next_worse_gap_percent == null
+    || conditions.next_worse_gap_percent == null
+    || conditions.next_worse_gap_percent + 1e-9 >= sourceConditions.next_worse_gap_percent;
+  return {
+    accepted: toleranceAccepted && rankAccepted && separationAccepted,
+    answer_gaps: answerGaps,
+    max_gap_percent: maxGap,
+    conditions,
+    tolerance_accepted: toleranceAccepted,
+    rank_accepted: rankAccepted,
+    separation_accepted: separationAccepted,
+  };
 }
 
 function buildWasmRequestKey(handText, melds, payload) {
@@ -1454,7 +1516,6 @@ function adminPayload() {
     seat_wind: $("admin-seat-wind").value,
     dora: $("admin-dora").value,
     count: Number($("admin-count").value),
-    tolerance_percent: Number($("admin-tolerance").value),
     note: $("admin-note").value,
     prompt_note: $("admin-prompt-note").value,
     objective: 2,
@@ -1489,14 +1550,9 @@ async function registerProblems(records) {
 async function generateWithWasm() {
   setAdminMessage("シミュレーターで類題候補を検証しています。", "busy");
   try {
-    const toleranceWasBlank = !String($("admin-tolerance").value || "").trim();
     const sourceVerification = await runWasmVerification();
-    if (toleranceWasBlank) {
-      $("admin-tolerance").value = toleranceInputValue(sourceVerification.required_tolerance_percent);
-      updateToleranceHint();
-    }
     const payload = adminPayload();
-    const canRegisterSource = sourceVerification.required_tolerance_percent <= payload.tolerance_percent + 1e-9;
+    const sourceConditions = sourceVerification.similarity_conditions;
     const sourceKey = canonicalProblemKey({
       hand: sourceVerification.hand,
       melds_text: sourceVerification.melds_text,
@@ -1504,14 +1560,8 @@ async function generateWithWasm() {
     let sourceProblem = problems.find((problem) => canonicalProblemKey(problem) === sourceKey);
     const pending = [];
     if (!sourceProblem) {
-      if (!canRegisterSource) {
-        const proceed = confirm("元問題はこの許容乖離率では登録できません。元問題を登録せずに類題生成を続けますか？");
-        if (!proceed) return;
-        sourceProblem = { id: null };
-      } else {
-        sourceProblem = manualProblemFromForm(sourceVerification);
-        pending.push(sourceProblem);
-      }
+      sourceProblem = manualProblemFromForm(sourceVerification);
+      pending.push(sourceProblem);
     }
     const requested = Math.max(1, Math.min(100, payload.count || 10));
     const specs = enumerateTransformSpecs(sourceVerification.hand, transformAuxiliaryTiles(payload));
@@ -1558,15 +1608,20 @@ async function generateWithWasm() {
           { ...payload, dora: candidate.dora }
         );
         if (simulation?.solver_mode?.degraded) fallbackUsed = true;
-        const answerGaps = calculateAnswerGaps(simulation, candidate.answers);
-        if (Math.max(...Object.values(answerGaps)) > payload.tolerance_percent + 1e-9) continue;
+        const evaluation = evaluateSimilarProblem(simulation, candidate.answers, sourceConditions);
+        if (!evaluation.accepted) continue;
         qualified.push({
           id: crypto.randomUUID(),
           hand: candidate.hand,
           answers: candidate.answers,
           primary_answer: candidate.answers[0],
-          tolerance_percent: payload.tolerance_percent,
-          answer_gaps: answerGaps,
+          tolerance_percent: sourceConditions.tolerance_percent,
+          answer_gaps: evaluation.answer_gaps,
+          similarity_conditions: {
+            ...sourceConditions,
+            actual_max_rank: evaluation.conditions.max_rank,
+            actual_next_worse_gap_percent: evaluation.conditions.next_worse_gap_percent,
+          },
           melds: candidate.melds,
           melds_text: candidate.melds.map((meld) => meld.mpsz).join(" "),
           genre: payload.genre.trim() || "未分類",
@@ -1596,7 +1651,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。${sourceProblem.id ? "元問題も登録済みです。" : "元問題は未登録です。"}${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
+      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -1611,12 +1666,14 @@ function renderVerification(data) {
   const gaps = Object.entries(data.answer_gaps || {})
     .map(([tile, gap]) => `${tile}: ${formatPercent(gap)}%`)
     .join(" / ");
+  const conditions = data.similarity_conditions || {};
   $("verification-result").innerHTML = `
     <h3>${data.is_optimal ? "指定解答は最適解" : "指定解答の乖離を確認"}</h3>
     <p>ブロック: ${(data.blocks || []).map(escapeHtml).join(" / ")}</p>
     <p>副露: ${data.melds_text ? escapeHtml(data.melds_text) : "なし"}</p>
     <p>最適打: ${(data.simulation?.best_discards || []).join("・")}</p>
     <p>指定解答の乖離率: ${escapeHtml(gaps)}</p>
+    <p><b>類題の採用条件</b>: 許容乖離率 ${formatPercent(conditions.tolerance_percent || 0)}%以下 / ${Number(conditions.max_rank || 1)}位以内 / ${Number(conditions.next_worse_rank || 2)}位との乖離 ${formatOptionalPercent(conditions.next_worse_gap_percent)}</p>
     <div id="admin-simulator-table"></div>
   `;
   renderSimulatorTable(
@@ -1646,13 +1703,15 @@ function renderGeneratedResults(items) {
       const gap = Number(problem.answer_gaps?.[answer] || 0);
       return `${answer}: 期待値 ${formatNumber(row?.expected_score)} / 乖離 ${formatPercent(gap)}%`;
     }).join("<br>");
+    const conditions = problem.similarity_conditions || {};
     return `<details class="generated-result">
       <summary><span class="generated-summary">
         <span class="generated-hand">${parseMpsz(problem.hand).map(tileImage).join("")}${renderMelds(problem.melds || [])}</span>
         <span class="generated-metrics">
           <b>解答 ${answers.map(escapeHtml).join("・")}</b><br>
           1位 ${escapeHtml(best?.tile || "-")}: 期待値 ${formatNumber(best?.expected_score)}<br>
-          ${answerSummary}
+          ${answerSummary}<br>
+          実順位 ${Number(conditions.actual_max_rank || 1)}位 / ${Number(conditions.next_worse_rank || 2)}位との乖離 ${formatOptionalPercent(conditions.actual_next_worse_gap_percent)}
         </span>
       </span></summary>
       <div id="generated-simulator-${index}"></div>
@@ -1963,6 +2022,14 @@ async function saveEditedProblem(problem) {
     const payload = problemPayload(candidate);
     const simulation = await analyzeWithWasm(candidate.hand, melds, payload);
     const answerGaps = calculateAnswerGaps(simulation, answers);
+    const answerConditions = calculateAnswerConditions(simulation, answers);
+    candidate.tolerance_percent = Math.max(...Object.values(answerGaps));
+    candidate.similarity_conditions = {
+      tolerance_percent: candidate.tolerance_percent,
+      max_rank: answerConditions.max_rank,
+      next_worse_rank: answerConditions.max_rank + 1,
+      next_worse_gap_percent: answerConditions.next_worse_gap_percent,
+    };
     let relatedUpdates = [];
     if (relatedProblems.length) {
       message.textContent = `関連類題を更新しています（0/${relatedProblems.length}）`;
@@ -1974,6 +2041,8 @@ async function saveEditedProblem(problem) {
     Object.assign(problem, candidate, {
       simulator: simulation,
       answer_gaps: answerGaps,
+      tolerance_percent: candidate.tolerance_percent,
+      similarity_conditions: candidate.similarity_conditions,
       unverified: false,
     });
     relatedUpdates.forEach(({ problem: target, update }) => Object.assign(target, update));
@@ -2014,7 +2083,8 @@ async function buildRelatedProblemUpdates(sourceCandidate, relatedProblems, onPr
     validateCombinedTileCounts(parseMpsz(transformed.hand), transformed.melds);
     const payload = { ...problemPayload(target), dora: transformed.dora };
     const simulation = await analyzeWithWasm(transformed.hand, transformed.melds, payload);
-    const answerGaps = calculateAnswerGaps(simulation, transformed.answers);
+    const evaluation = evaluateSimilarProblem(simulation, transformed.answers, sourceCandidate.similarity_conditions);
+    if (!evaluation.accepted) throw new Error(`更新後の類題が採用条件を満たしません: ${transformed.hand}`);
     updates.push({
       problem: target,
       update: {
@@ -2031,7 +2101,13 @@ async function buildRelatedProblemUpdates(sourceCandidate, relatedProblems, onPr
           dora_indicators: parseMpsz(transformed.dora),
         },
         simulator: simulation,
-        answer_gaps: answerGaps,
+        tolerance_percent: sourceCandidate.similarity_conditions.tolerance_percent,
+        answer_gaps: evaluation.answer_gaps,
+        similarity_conditions: {
+          ...sourceCandidate.similarity_conditions,
+          actual_max_rank: evaluation.conditions.max_rank,
+          actual_next_worse_gap_percent: evaluation.conditions.next_worse_gap_percent,
+        },
         unverified: false,
       },
     });
@@ -2461,19 +2537,11 @@ function renderAllInputPreviews() {
   renderTileInputPreview("hand-preview", "admin-hand", parseMpsz($("admin-hand").value), "手牌を選択してください", 14);
   renderTileInputPreview("dora-preview", "admin-dora", parseMpsz($("admin-dora").value), "ドラ表示牌なし");
   renderTileInputPreview("answer-preview", "admin-answer", parseMpsz($("admin-answer").value), "解答牌を選択してください");
-  updateToleranceHint();
   let melds = [];
   try { melds = parseMeldsClient($("admin-melds").value); } catch {}
   $("meld-preview").innerHTML = `${renderMelds(melds)}
     ${pendingMeldTiles.length ? `<div class="concealed-hand">${pendingMeldTiles.map(tileImage).join("")}</div>` : ""}
     ${!melds.length && !pendingMeldTiles.length ? '<span class="empty-preview">副露なし</span>' : ""}`;
-}
-
-function updateToleranceHint() {
-  const target = $("tolerance-hint");
-  if (!target) return;
-  const raw = String($("admin-tolerance")?.value || "").trim();
-  target.textContent = raw ? "" : "空欄なら自動で検証して設定します。";
 }
 
 function renderTileInputPreview(id, inputId, tiles, emptyText, slotCount = 0) {
@@ -2906,13 +2974,8 @@ function formatPercent(value) {
   return Number(value || 0).toFixed(4).replace(/\.?0+$/, "");
 }
 
-function toleranceInputValue(value) {
-  const numeric = Math.max(0, Number(value || 0));
-  if (numeric <= 1e-12) return "0";
-  const step = 0.0001;
-  return (Math.floor(numeric / step + 1e-9) * step + step)
-    .toFixed(4)
-    .replace(/\.?0+$/, "");
+function formatOptionalPercent(value) {
+  return value == null ? "条件なし" : `${formatPercent(value)}%以上`;
 }
 
 function parseMpsz(text) {
