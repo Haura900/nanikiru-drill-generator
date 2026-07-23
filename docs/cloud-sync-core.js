@@ -5,6 +5,7 @@ export const CLOUD_SCHEMA_VERSION = 2;
 export const MAX_PROBLEMS_PER_USER = 10000;
 export const MAX_PROBLEM_PAYLOAD_CHARS = 750000;
 export const MAX_PROGRESS_PAYLOAD_CHARS = 200000;
+export const DEFAULT_ADMIN_COUNT = 3;
 
 export function compareMutationVersion(left, right, timeField = "modifiedAt") {
   const leftTime = Number(left?.[timeField] || 0);
@@ -54,7 +55,7 @@ export function decomposeLegacySave(save) {
   return {
     problems,
     history,
-    settings: { reviewSettings: save?.s || {}, adminCount: Number(save?.a) || 10, genreOrder: Array.isArray(save?.g) ? save.g : [] },
+    settings: { reviewSettings: save?.s || {}, adminCount: Number(save?.a) || DEFAULT_ADMIN_COUNT, genreOrder: Array.isArray(save?.g) ? save.g : [] },
   };
 }
 

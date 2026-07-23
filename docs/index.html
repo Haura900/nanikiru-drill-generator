@@ -89,8 +89,13 @@
         <canvas id="genre-chart" class="report-chart" width="1100" height="420"></canvas>
         <h3>日付別正答率</h3>
         <canvas id="daily-chart" class="report-chart" width="1100" height="380"></canvas>
-        <h3>学習実績（復習問題を解いた日）</h3>
+        <h3>学習実績（問題を解いた日）</h3>
         <canvas id="hard-solve-chart" class="report-chart" width="1100" height="380"></canvas>
+        <div class="section-heading chart-heading">
+          <h3>何日前に何問追加したか</h3>
+          <span id="problem-add-average" class="chart-note"></span>
+        </div>
+        <canvas id="problem-add-chart" class="report-chart" width="1100" height="360"></canvas>
         <h3>何日後に復習問題が何問出るか</h3>
         <canvas id="review-schedule-chart" class="report-chart" width="1100" height="360"></canvas>
         <h3>今の復習間隔の分布</h3>
@@ -161,7 +166,7 @@
           </div>
           <div class="form-row">
             <label>類題作成数
-              <input id="admin-count" type="number" min="1" max="100" value="10">
+              <input id="admin-count" type="number" min="1" max="100" value="3">
             </label>
           </div>
           <label>解説・メモ

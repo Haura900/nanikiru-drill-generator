@@ -4,6 +4,7 @@ const PROBLEMS_KEY = "nanikiru-problems-v1";
 const BACKUP_PROMPT_KEY = "nanikiru-backup-prompt-v1";
 const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
 const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
+const DEFAULT_ADMIN_COUNT = 3;
 const GENRE_ORDER_KEY = "nanikiru-genre-order-v1";
 const MAX_BACKUP_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_DECOMPRESSED_BACKUP_BYTES = 100 * 1024 * 1024;
@@ -38,6 +39,7 @@ const WASM_DEFAULT_FLAGS = Object.freeze({
 const APP_BUILD_VERSION = typeof window !== "undefined" ? window.NANIKIRU_BUILD_VERSION || "local" : "local";
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
+let activeAnswerUndo = null;
 let managementSort = { key: "created_at", direction: "desc" };
 let managementSortBound = false;
 let selectedManagedProblemId = null;
@@ -266,6 +268,7 @@ function showQuestionFromPool(pool, reviewMode) {
 }
 
 function renderQuestion(problem, state) {
+  activeAnswerUndo = null;
   $("quiz-empty").classList.add("hidden");
   $("question-card").classList.remove("hidden");
   $("question-genre").textContent = "";
@@ -340,7 +343,9 @@ function answerQuestion(tile, clickedButton) {
     }
   });
   if (!correct) clickedButton.classList.add("wrong");
-  const dueAt = recordAttempt(currentProblem, correct);
+  const recorded = recordAttempt(currentProblem, correct);
+  const dueAt = recorded.dueAt;
+  activeAnswerUndo = recorded.undo;
   const result = $("answer-result");
   result.className = `result ${correct ? "correct" : "wrong"}`;
   const answerText = answers.join("・");
@@ -358,9 +363,11 @@ function answerQuestion(tile, clickedButton) {
     ${postReviewText ? `<p>${postReviewText}</p>` : ""}
     ${currentProblem.note ? `<p>${renderTextWithTiles(currentProblem.note)}</p>` : ""}
     <div class="result-actions">
+      <button id="undo-current-answer" type="button">解答取消</button>
       <button id="edit-current-problem" type="button">問題編集</button>
       <button id="continue-question" type="button" class="primary">次の問題</button>
     </div>`;
+  $("undo-current-answer").addEventListener("click", undoCurrentAnswer);
   $("edit-current-problem").addEventListener("click", () => openProblemInManager(currentProblem.id));
   $("continue-question").addEventListener("click", continueQuestion);
   $("continue-question-inline").addEventListener("click", continueQuestion);
@@ -422,6 +429,10 @@ function recordAttempt(problem, correct) {
   const history = loadHistory();
   const reviewSettings = loadReviewSettings();
   const now = Date.now();
+  const hadPreviousState = Object.prototype.hasOwnProperty.call(history, problem.id);
+  const previousState = hadPreviousState
+    ? JSON.parse(JSON.stringify(history[problem.id]))
+    : null;
   const state = history[problem.id] || { attempts: [] };
   const previous = state.attempts[state.attempts.length - 1];
   let dueAt;
@@ -444,7 +455,43 @@ function recordAttempt(problem, correct) {
   history[problem.id] = state;
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "学習履歴を保存");
-  return dueAt;
+  return {
+    dueAt,
+    undo: {
+      problemId: problem.id,
+      attemptAt: now,
+      correct,
+      attemptsLength: state.attempts.length,
+      previousState,
+    },
+  };
+}
+
+function undoCurrentAnswer() {
+  const undo = activeAnswerUndo;
+  if (!undo || !currentProblem || currentProblem.id !== undo.problemId) return;
+  const history = loadHistory();
+  const state = history[undo.problemId];
+  const last = state?.attempts?.[state.attempts.length - 1];
+  const isRecordedAnswer = state?.attempts?.length === undo.attemptsLength
+    && last?.at === undo.attemptAt
+    && Boolean(last?.correct) === undo.correct;
+  if (!isRecordedAnswer) {
+    activeAnswerUndo = null;
+    const button = $("undo-current-answer");
+    if (button) button.disabled = true;
+    return;
+  }
+
+  if (undo.previousState) history[undo.problemId] = undo.previousState;
+  else delete history[undo.problemId];
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  markProgressDirty(undo.problemId, "解答を取り消し", !undo.previousState);
+
+  const restoredState = undo.previousState;
+  activeAnswerUndo = null;
+  renderQuestion(currentProblem, restoredState);
+  renderGenreQuizTable();
 }
 
 function loadHistory() {
@@ -523,13 +570,13 @@ function renderReviewSettings() {
 
 function loadAdminCount() {
   const value = Number(localStorage.getItem(ADMIN_COUNT_KEY));
-  return Number.isFinite(value) && value >= 1 && value <= 100 ? Math.floor(value) : 10;
+  return Number.isFinite(value) && value >= 1 && value <= 100 ? Math.floor(value) : DEFAULT_ADMIN_COUNT;
 }
 
 function saveAdminCount() {
   const input = $("admin-count");
   if (!input) return;
-  const value = Math.max(1, Math.min(100, Math.floor(Number(input.value) || 10)));
+  const value = Math.max(1, Math.min(100, Math.floor(Number(input.value) || DEFAULT_ADMIN_COUNT)));
   input.value = String(value);
   localStorage.setItem(ADMIN_COUNT_KEY, String(value));
   markSettingsDirty("類題作成数を保存");
@@ -583,6 +630,7 @@ function renderStats() {
   renderGenreChartFilters(attempts);
   drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts);
   drawHardSolveChart(history);
+  drawProblemAdditionChart();
   drawReviewScheduleChart(history);
   drawReviewIntervalChart(history);
 }
@@ -717,10 +765,13 @@ function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
 }
 
 function drawHardSolveChart(history) {
+  drawBarChart($("hard-solve-chart"), buildSolveActivityPoints(history), "#8a5b3d");
+}
+
+function buildSolveActivityPoints(history) {
   const daily = {};
   activeHistoryEntries(history).forEach(([, state]) => {
-    (state.attempts || []).forEach((attempt, index) => {
-      if (index === 0) return;
+    (state.attempts || []).forEach((attempt) => {
       const date = jstDayKey(attempt.at);
       daily[date] ||= { total: 0 };
       daily[date].total++;
@@ -730,7 +781,45 @@ function drawHardSolveChart(history) {
     label: date.slice(5),
     value: value.total,
   }));
-  drawBarChart($("hard-solve-chart"), points, "#8a5b3d");
+  return points;
+}
+
+function drawProblemAdditionChart() {
+  const stats = buildProblemAdditionStats(problems);
+  $("problem-add-average").textContent = stats.total
+    ? `平均 ${stats.averagePerDay.toFixed(2)}問／日`
+    : "まだ登録記録がありません";
+  drawBarChart($("problem-add-chart"), stats.total ? stats.buckets : [], "#c48b24");
+}
+
+function buildProblemAdditionStats(items, now = Date.now()) {
+  const counts = new Map();
+  const createdTimes = [];
+  (items || []).forEach((problem) => {
+    const createdAt = Date.parse(problem?.created_at || "");
+    if (!Number.isFinite(createdAt)) return;
+    createdTimes.push(createdAt);
+    const daysAgo = Math.max(0, calendarDaysDiffJst(createdAt, now));
+    const key = daysAgo >= 31 ? "31日以上前" : `${daysAgo}日前`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const buckets = [];
+  for (let day = 0; day <= 30; day++) {
+    const label = `${day}日前`;
+    buckets.push({ label, value: counts.get(label) || 0 });
+  }
+  buckets.push({ label: "31日以上前", value: counts.get("31日以上前") || 0 });
+  const total = createdTimes.length;
+  const firstCreatedAt = total ? Math.min(...createdTimes) : null;
+  const elapsedDays = firstCreatedAt === null
+    ? 0
+    : Math.max(1, calendarDaysDiffJst(firstCreatedAt, now) + 1);
+  return {
+    buckets,
+    total,
+    elapsedDays,
+    averagePerDay: elapsedDays ? total / elapsedDays : 0,
+  };
 }
 
 function drawReviewScheduleChart(history) {
@@ -747,7 +836,7 @@ function buildReviewScheduleBuckets(history) {
   const now = Date.now();
   const counts = new Map();
   activeHistoryEntries(history).forEach(([, state]) => {
-    if (!isReviewProblemState(state)) return;
+    if (!state?.attempts?.length) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
@@ -775,7 +864,7 @@ function buildReviewIntervalBuckets(history) {
     { label: "31日以上", min: 31, max: Infinity, value: 0 },
   ];
   activeHistoryEntries(history).forEach(([, state]) => {
-    if (!isReviewProblemState(state)) return;
+    if (!state?.attempts?.length) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
@@ -820,11 +909,6 @@ function jstDayKey(ms) {
   const month = parts.find((part) => part.type === "month")?.value || "00";
   const day = parts.find((part) => part.type === "day")?.value || "00";
   return `${year}-${month}-${day}`;
-}
-
-function isReviewProblemState(state) {
-  if (!state?.attempts?.length) return false;
-  return state.attempts.length > 1 || state.attempts.some((attempt) => !attempt.correct);
 }
 
 function drawBarChart(canvas, items, barColor) {
@@ -1563,7 +1647,7 @@ async function generateWithWasm() {
       sourceProblem = manualProblemFromForm(sourceVerification);
       pending.push(sourceProblem);
     }
-    const requested = Math.max(1, Math.min(100, payload.count || 10));
+    const requested = Math.max(1, Math.min(100, payload.count || DEFAULT_ADMIN_COUNT));
     const specs = enumerateTransformSpecs(sourceVerification.hand, transformAuxiliaryTiles(payload));
     shuffleArray(specs);
     const seen = new Set(problems.map(canonicalProblemKey));
@@ -2289,7 +2373,7 @@ async function encodeCurrentSave() {
 }
 
 function normalizeSaveData(data) {
-  if (Array.isArray(data)) return validateNormalizedSave({ v: 6, p: data, h: {}, s: DEFAULT_REVIEW_SETTINGS, a: 10, g: [] });
+  if (Array.isArray(data)) return validateNormalizedSave({ v: 6, p: data, h: {}, s: DEFAULT_REVIEW_SETTINGS, a: DEFAULT_ADMIN_COUNT, g: [] });
   if (data?.localStorage && typeof data.localStorage === "object") {
     const snapshot = data.localStorage;
     let parsedProblems = [];
@@ -2303,17 +2387,17 @@ function normalizeSaveData(data) {
     try { parsedSettings = JSON.parse(snapshot[REVIEW_SETTINGS_KEY] || "{}"); } catch { /* legacy */ }
     let genreOrder = [];
     try { genreOrder = JSON.parse(snapshot[GENRE_ORDER_KEY] || "[]"); } catch { /* legacy */ }
-    return validateNormalizedSave({ v: 6, p: parsedProblems, h: parsedHistory, s: parsedSettings, a: Number(snapshot[ADMIN_COUNT_KEY]) || 10, g: genreOrder });
+    return validateNormalizedSave({ v: 6, p: parsedProblems, h: parsedHistory, s: parsedSettings, a: Number(snapshot[ADMIN_COUNT_KEY]) || DEFAULT_ADMIN_COUNT, g: genreOrder });
   }
   if (Array.isArray(data?.p)) {
-    return validateNormalizedSave({ v: 6, p: data.p, h: data.h || {}, s: data.s || DEFAULT_REVIEW_SETTINGS, a: data.a || 10, g: data.g || [] });
+    return validateNormalizedSave({ v: 6, p: data.p, h: data.h || {}, s: data.s || DEFAULT_REVIEW_SETTINGS, a: data.a || DEFAULT_ADMIN_COUNT, g: data.g || [] });
   }
   if (Array.isArray(data?.problems)) {
     let legacyHistory = data.history || {};
     if (typeof legacyHistory === "string") {
       try { legacyHistory = JSON.parse(legacyHistory); } catch { legacyHistory = {}; }
     }
-    return validateNormalizedSave({ v: 6, p: data.problems, h: legacyHistory, s: data.settings || DEFAULT_REVIEW_SETTINGS, a: data.adminCount || 10, g: data.genreOrder || [] });
+    return validateNormalizedSave({ v: 6, p: data.problems, h: legacyHistory, s: data.settings || DEFAULT_REVIEW_SETTINGS, a: data.adminCount || DEFAULT_ADMIN_COUNT, g: data.genreOrder || [] });
   }
   throw new Error("復元できるデータではありません。");
 }
@@ -2350,7 +2434,7 @@ async function applySaveData(data, options = {}) {
     localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(normalized.h || {}));
     localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(normalized.s || DEFAULT_REVIEW_SETTINGS));
-    localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || 10))));
+    localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || DEFAULT_ADMIN_COUNT))));
     saveGenreOrder(normalized.g || [], false);
     repairReviewHistoryDueDates();
     renderReviewSettings();
@@ -2444,7 +2528,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
       };
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
-      localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || 10))));
+      localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || DEFAULT_ADMIN_COUNT))));
       saveGenreOrder(settingsRecord.genreOrder, false);
     }
     renderReviewSettings(); renderAdminCount(); refreshGenres();

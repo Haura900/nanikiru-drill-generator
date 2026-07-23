@@ -73,6 +73,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
 test("problem editor defaults to graphical tile input", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => showView("create"));
+  await expect(page.locator("#admin-count")).toHaveValue("3");
   await expect(page.locator("#admin-genre")).toHaveValue("");
   await expect(page.locator("#admin-dora")).toHaveValue("");
   await page.locator("#hand-picker .picker-tile[data-tile='1m']").click();
@@ -470,6 +471,109 @@ test("quiz shows total unseen count and random-mode remaining count", async ({ p
   await expect(page.locator(".genre-total-row")).toContainText("2問");
   await page.click("#random-question");
   await expect(page.locator("#question-status")).toContainText("残り 1問");
+});
+
+test("a first answer appears in learning activity and review interval charts", async ({ page }) => {
+  await page.addInitScript(() => {
+    const now = Date.now();
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "first-chart", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "集計確認",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      "first-chart": { attempts: [{ at: now, correct: true, genre: "集計確認" }], dueAt: now + 7 * 86400000 },
+    }));
+  });
+  await page.goto("http://127.0.0.1:18765/");
+  const chartData = await page.evaluate(() => {
+    const history = loadHistory();
+    return {
+      activity: buildSolveActivityPoints(history),
+      scheduleTotal: buildReviewScheduleBuckets(history).reduce((sum, item) => sum + item.value, 0),
+      intervalTotal: buildReviewIntervalBuckets(history).reduce((sum, item) => sum + item.value, 0),
+    };
+  });
+  expect(chartData.activity).toHaveLength(1);
+  expect(chartData.activity[0].value).toBe(1);
+  expect(chartData.scheduleTotal).toBe(1);
+  expect(chartData.intervalTotal).toBe(1);
+});
+
+test("problem additions are grouped by days ago with a daily average", async ({ page }) => {
+  const seedNow = Date.now();
+  await page.addInitScript(({ seedNow }) => {
+    const makeProblem = (id, createdAt) => ({
+      id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "追加集計",
+      created_at: new Date(createdAt).toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    });
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([
+      makeProblem("added-today", seedNow),
+      makeProblem("added-two-days-a", seedNow - 2 * 86400000),
+      makeProblem("added-two-days-b", seedNow - 2 * 86400000),
+    ]));
+  }, { seedNow });
+  await page.goto("http://127.0.0.1:18765/");
+  await page.click('#nav button[data-view="stats"]');
+  await expect(page.locator("#problem-add-average")).toHaveText("平均 1.00問／日");
+  await expect(page.locator("#problem-add-chart")).toBeVisible();
+
+  const stats = await page.evaluate(() => {
+    const now = Date.UTC(2026, 6, 23, 3);
+    return buildProblemAdditionStats([
+      { created_at: new Date(now).toISOString() },
+      { created_at: new Date(now - 2 * DAY).toISOString() },
+      { created_at: new Date(now - 2 * DAY).toISOString() },
+      { created_at: "invalid" },
+    ], now);
+  });
+  expect(stats.total).toBe(3);
+  expect(stats.elapsedDays).toBe(3);
+  expect(stats.averagePerDay).toBe(1);
+  expect(stats.buckets.find((item) => item.label === "0日前").value).toBe(1);
+  expect(stats.buckets.find((item) => item.label === "2日前").value).toBe(2);
+});
+
+test("the latest answer can be cancelled with its previous review schedule restored", async ({ page }) => {
+  const previousAt = Date.now() - 7 * 86400000;
+  const previousDueAt = Date.now() - 1000;
+  await page.addInitScript(({ previousAt, previousDueAt }) => {
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "undo-answer", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "取消確認",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      "undo-answer": { attempts: [{ at: previousAt, correct: false, genre: "取消確認" }], dueAt: previousDueAt },
+    }));
+  }, { previousAt, previousDueAt });
+
+  await page.goto("http://127.0.0.1:18765/");
+  await page.locator("#hand button.tile[data-tile='2m']").click();
+  await expect(page.locator("#undo-current-answer")).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"].attempts)).toHaveLength(2);
+
+  await page.locator("#undo-current-answer").click();
+  const restored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"]);
+  expect(restored).toEqual({ attempts: [{ at: previousAt, correct: false, genre: "取消確認" }], dueAt: previousDueAt });
+  await expect(page.locator("#answer-result")).toBeHidden();
+  await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
+  await expect(page.locator("#question-genre")).toBeHidden();
+});
+
+test("cancelling a first answer removes the new learning record", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "undo-first", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "初回取消",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+  });
+
+  await page.goto("http://127.0.0.1:18765/");
+  await page.locator("#random-question").click();
+  await page.locator("#hand button.tile[data-tile='1m']").click();
+  await page.locator("#undo-current-answer").click();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1") || "{}")["undo-first"])).toBeUndefined();
+  await expect(page.locator("#question-status")).toContainText("初見");
+  await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
 });
 
 test("restored text cannot create script or event attributes", async ({ page }) => {

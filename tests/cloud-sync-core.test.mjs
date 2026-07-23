@@ -74,5 +74,6 @@ test("旧snapshot v5を問題・履歴・設定へ分解", () => {
   assert.equal(result.problems.length, 2);
   assert.deepEqual(Object.keys(result.history), ["p1"]);
   assert.equal(result.settings.adminCount, 12);
+  assert.equal(decomposeLegacySave({ p: [], h: {} }).settings.adminCount, 3);
   assert.throws(() => decomposeLegacySave({ p: Array.from({ length: 10001 }, (_, id) => ({ id })) }), /10,000/);
 });
