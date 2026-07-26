@@ -362,7 +362,16 @@ test("similar-problem conditions use source tolerance, rank and fixed next-worse
       simulation([["1m", 100], ["2m", 100], ["3m", 90]]),
       ["1m", "2m"]
     );
-    return { sourceConditions, accepted, rejectedBySeparation, rejectedByRank, tiedAnswers };
+    const tiedBest = calculateAnswerConditions(
+      simulation([["4m", 134], ["7m", 134], ["1p", 121.62]]),
+      ["4m"]
+    );
+    const tiedCandidate = evaluateSimilarProblem(
+      simulation([["4m", 134], ["7m", 134], ["1p", 121.62]]),
+      ["4m"],
+      { tolerance_percent: 0, max_rank: 1, next_worse_rank: 2, next_worse_gap_percent: 5 }
+    );
+    return { sourceConditions, accepted, rejectedBySeparation, rejectedByRank, tiedAnswers, tiedBest, tiedCandidate };
   });
   expect(result.sourceConditions.tolerance_percent).toBeCloseTo(10, 8);
   expect(result.sourceConditions.max_rank).toBe(2);
@@ -374,7 +383,13 @@ test("similar-problem conditions use source tolerance, rank and fixed next-worse
   expect(result.rejectedBySeparation.separation_accepted).toBe(false);
   expect(result.rejectedByRank.rank_accepted).toBe(false);
   expect(result.tiedAnswers.max_rank).toBe(1);
-  expect(result.tiedAnswers.next_worse_gap_percent).toBeCloseTo(10, 8);
+  expect(result.tiedAnswers.next_worse_gap_percent).toBe(0);
+  expect(result.tiedBest.max_rank).toBe(1);
+  expect(result.tiedBest.comparison_rank).toBe(2);
+  expect(result.tiedBest.next_worse_gap_percent).toBe(0);
+  expect(result.tiedBest.boundary_tile).toBe("7m");
+  expect(result.tiedCandidate.separation_accepted).toBe(false);
+  expect(result.tiedCandidate.accepted).toBe(false);
 });
 
 test("save data is compressed and remains backward compatible", async ({ page }) => {

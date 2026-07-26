@@ -1376,13 +1376,13 @@ function rankedDiscardRows(simulation) {
   const rows = [...byTile.values()].sort((left, right) => Number(right.metric) - Number(left.metric));
   let rank = 0;
   let previousMetric = null;
-  return rows.map((row) => {
+  return rows.map((row, index) => {
     const metric = Number(row.metric);
     const tied = previousMetric !== null
       && Math.abs(metric - previousMetric) <= Math.max(1e-9, Math.abs(previousMetric) * 1e-10);
     if (!tied) rank += 1;
     previousMetric = metric;
-    return { ...row, rank };
+    return { ...row, rank, position: index + 1 };
   });
 }
 
@@ -1395,7 +1395,9 @@ function calculateAnswerConditions(simulation, answers, boundaryRank = null) {
   });
   const maxRank = Math.max(...answerRows.map((row) => row.rank));
   const comparisonRank = boundaryRank || maxRank + 1;
-  const boundary = ranked.find((row) => row.rank === comparisonRank) || null;
+  // 解答順位は同率を同じ順位として扱う一方、乖離の比較先は
+  // 「上から何番目の打牌か」で固定する。同率の打牌を飛ばしてはならない。
+  const boundary = ranked.find((row) => row.position === comparisonRank) || null;
   const worstAnswerMetric = Math.min(...answerRows.map((row) => Number(row.metric)));
   const nextWorseGap = boundary
     ? Math.max(0, (worstAnswerMetric - Number(boundary.metric)) / Math.max(Math.abs(worstAnswerMetric), 1e-12) * 100)
