@@ -593,6 +593,7 @@ test("cancelling a first answer removes the new learning record", async ({ page 
 
 test("quiz display sorts red fives between five and six regardless of mpsz order", async ({ page }) => {
   await page.addInitScript(() => {
+    Math.random = () => 0.99;
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "red-order", hand: "6057s6057p6057m11z", answers: ["5m"], primary_answer: "5m", genre: "red-order",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -607,9 +608,29 @@ test("quiz display sorts red fives between five and six regardless of mpsz order
   expect(displayedTiles).toEqual([
     "5m", "0m", "6m", "7m",
     "5p", "0p", "6p", "7p",
-    "5s", "0s", "6s", "7s",
-    "1z", "1z",
+    "5s", "0s", "6s",
+    "1z", "1z", "7s",
   ]);
+  await expect(page.locator("#hand .drawn-tile")).toHaveAttribute("data-tile", "7s");
+  expect(parseFloat(await page.locator("#hand .drawn-tile").evaluate((tile) => getComputedStyle(tile).marginLeft))).toBeGreaterThan(0);
+});
+
+test("drawn tile candidates use sequence ends and triplets but not incomplete shapes", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const selected = await page.evaluate(() => ({
+    sequenceLow: selectDrawnTileForQuestion(["3m", "4m", "5m"], () => 0).drawnTile,
+    sequenceHigh: selectDrawnTileForQuestion(["3m", "4m", "5m"], () => 0.99).drawnTile,
+    triplet: selectDrawnTileForQuestion(["7p", "7p", "7p"], () => 0).drawnTile,
+    adjacentTaatsu: selectDrawnTileForQuestion(["3s", "4s"], () => 0).drawnTile,
+    gappedTaatsu: selectDrawnTileForQuestion(["3s", "5s"], () => 0).drawnTile,
+  }));
+  expect(selected).toEqual({
+    sequenceLow: "3m",
+    sequenceHigh: "5m",
+    triplet: "7p",
+    adjacentTaatsu: null,
+    gappedTaatsu: null,
+  });
 });
 
 test("only correct-to-wrong transitions count and the eighth suspends until resumed", async ({ page }) => {

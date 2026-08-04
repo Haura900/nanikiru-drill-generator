@@ -293,21 +293,22 @@ function renderQuestion(problem, state) {
       `).join("")}</div></div>`
     : "";
   const meldHtml = renderMelds(problem.melds || []);
-  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${sortTilesForQuestion(parseMpsz(problem.hand)).map((tile) => `
+  const { concealedTiles, drawnTile } = selectDrawnTileForQuestion(parseMpsz(problem.hand));
+  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${concealedTiles.map((tile) => `
     ${renderQuestionTile(tile, problem.settings || {})}
-  `).join("")}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
+  `).join("")}${drawnTile ? renderQuestionTile(drawnTile, problem.settings || {}, true) : ""}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
 }
 
-function renderQuestionTile(tile, settings = {}) {
+function renderQuestionTile(tile, settings = {}, isDrawn = false) {
   const markers = questionTileMarkers(tile, settings);
-  const classes = ["tile", markers.includes("ド") ? "hand-dora" : ""].filter(Boolean).join(" ");
+  const classes = ["tile", markers.includes("ド") ? "hand-dora" : "", isDrawn ? "drawn-tile" : ""].filter(Boolean).join(" ");
   const markerHtml = markers.length
     ? `<span class="tile-marker-row">${markers.map((marker) => `<span class="tile-marker ${marker === "ド" ? "dora-marker" : "wind-marker"}">${marker}</span>`).join("")}</span>`
     : `<span class="tile-marker-row empty-marker" aria-hidden="true"></span>`;
-  return `<button class="${classes}" data-tile="${tile}" title="${tile}">
+  return `<button class="${classes}" data-tile="${tile}" title="${isDrawn ? `ツモ牌: ${tile}` : tile}">
       ${tileImage(tile)}
       ${markerHtml}
     </button>`;
@@ -3174,6 +3175,40 @@ function sortTilesForQuestion(tiles) {
     || tileRank(left) - tileRank(right)
     || Number(left[0] === "0") - Number(right[0] === "0")
   );
+}
+
+function selectDrawnTileForQuestion(tiles, random = Math.random) {
+  const sortedTiles = sortTilesForQuestion(tiles);
+  const counts = sortedTiles.reduce((result, tile) => {
+    const normalized = normalizePhysicalTile(tile);
+    result.set(normalized, (result.get(normalized) || 0) + 1);
+    return result;
+  }, new Map());
+  const candidates = new Set();
+  for (const suit of "mps") {
+    for (let rank = 1; rank <= 7; rank++) {
+      if (!counts.get(`${rank}${suit}`) || !counts.get(`${rank + 1}${suit}`) || !counts.get(`${rank + 2}${suit}`)) continue;
+      candidates.add(`${rank}${suit}`);
+      candidates.add(`${rank + 2}${suit}`);
+    }
+  }
+  counts.forEach((count, tile) => {
+    if (count >= 3) candidates.add(tile);
+  });
+  if (!candidates.size) return { concealedTiles: sortedTiles, drawnTile: null };
+
+  const candidateTiles = [...candidates];
+  const candidateIndex = Math.min(candidateTiles.length - 1, Math.floor(Math.max(0, random()) * candidateTiles.length));
+  const selectedPhysicalTile = candidateTiles[candidateIndex];
+  const matchingIndexes = sortedTiles
+    .map((tile, index) => normalizePhysicalTile(tile) === selectedPhysicalTile ? index : -1)
+    .filter((index) => index >= 0);
+  const matchingIndex = matchingIndexes.length === 1
+    ? matchingIndexes[0]
+    : matchingIndexes[Math.min(matchingIndexes.length - 1, Math.floor(Math.max(0, random()) * matchingIndexes.length))];
+  const concealedTiles = [...sortedTiles];
+  const [drawnTile] = concealedTiles.splice(matchingIndex, 1);
+  return { concealedTiles, drawnTile };
 }
 
 function normalizePhysicalTile(tile) {
