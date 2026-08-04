@@ -11,6 +11,7 @@ const MAX_DECOMPRESSED_BACKUP_BYTES = 100 * 1024 * 1024;
 const MAX_BACKUP_TEXT_CHARS = MAX_DECOMPRESSED_BACKUP_BYTES;
 const MAX_BACKUP_BASE64_CHARS = Math.ceil(MAX_BACKUP_FILE_BYTES * 4 / 3) + 16;
 const MANAGEMENT_PAGE_SIZE = 200;
+const SUSPENSION_WRONG_TRANSITIONS = 8;
 let suppressCloudUpload = false;
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
@@ -232,7 +233,7 @@ function dueReviewProblems(history = loadHistory()) {
   return problems
     .filter((problem) => {
       const item = history[problem.id];
-      return item?.attempts?.length && Number(item.dueAt || 0) <= now;
+      return item?.attempts?.length && !isProblemSuspended(item) && Number(item.dueAt || 0) <= now;
     })
     .sort((a, b) => history[a.id].dueAt - history[b.id].dueAt);
 }
@@ -292,7 +293,7 @@ function renderQuestion(problem, state) {
       `).join("")}</div></div>`
     : "";
   const meldHtml = renderMelds(problem.melds || []);
-  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${parseMpsz(problem.hand).map((tile) => `
+  $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${sortTilesForQuestion(parseMpsz(problem.hand)).map((tile) => `
     ${renderQuestionTile(tile, problem.settings || {})}
   `).join("")}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
@@ -349,9 +350,11 @@ function answerQuestion(tile, clickedButton) {
   const result = $("answer-result");
   result.className = `result ${correct ? "correct" : "wrong"}`;
   const answerText = answers.join("・");
-  const dueText = dueAt <= Date.now() + 1000
-    ? "すぐに復習対象になります"
-    : `次回: ${new Date(dueAt).toLocaleString("ja-JP")}`;
+  const dueText = recorded.suspendedNow
+    ? "誤答カウントが8回に達したため休止しました"
+    : dueAt <= Date.now() + 1000
+      ? "すぐに復習対象になります"
+      : `次回: ${new Date(dueAt).toLocaleString("ja-JP")}`;
   const postReviewText = currentQuizContext?.mode === "review"
     ? renderPostReviewInfo(currentProblem.id)
     : "";
@@ -379,6 +382,9 @@ function answerQuestion(tile, clickedButton) {
     tile
   );
   renderGenreQuizTable();
+  if (recorded.suspendedNow) {
+    alert("この問題は「正解後の不正解」が8回に達したため休止しました。\n問題一覧から休止を解除できます。");
+  }
 }
 
 function renderPostReviewInfo(currentProblemId) {
@@ -435,6 +441,10 @@ function recordAttempt(problem, correct) {
     : null;
   const state = history[problem.id] || { attempts: [] };
   const previous = state.attempts[state.attempts.length - 1];
+  const previousWrongTransitionCount = wrongTransitionCount(state);
+  const countsAsWrongTransition = !correct && previous?.correct === true;
+  const nextWrongTransitionCount = previousWrongTransitionCount + (countsAsWrongTransition ? 1 : 0);
+  const suspendedNow = !isProblemSuspended(state) && nextWrongTransitionCount >= SUSPENSION_WRONG_TRANSITIONS;
   let dueAt;
   if (!correct) {
     dueAt = now + reviewSettings.wrong_retry_days * DAY;
@@ -452,11 +462,17 @@ function recordAttempt(problem, correct) {
   }
   state.attempts.push({ at: now, correct, genre: problem.genre || "未分類" });
   state.dueAt = dueAt;
+  state.wrongTransitionCount = nextWrongTransitionCount;
+  if (suspendedNow) {
+    state.suspended = true;
+    state.suspendedAt = now;
+  }
   history[problem.id] = state;
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "学習履歴を保存");
   return {
     dueAt,
+    suspendedNow,
     undo: {
       problemId: problem.id,
       attemptAt: now,
@@ -465,6 +481,40 @@ function recordAttempt(problem, correct) {
       previousState,
     },
   };
+}
+
+function wrongTransitionCount(state) {
+  if (Object.prototype.hasOwnProperty.call(state || {}, "wrongTransitionCount")) {
+    const stored = Number(state.wrongTransitionCount);
+    return Number.isFinite(stored) && stored >= 0 ? Math.floor(stored) : 0;
+  }
+  const attempts = state?.attempts || [];
+  return attempts.reduce((count, attempt, index) => (
+    index > 0 && attempt.correct === false && attempts[index - 1]?.correct === true ? count + 1 : count
+  ), 0);
+}
+
+function isProblemSuspended(state) {
+  return state?.suspended === true;
+}
+
+function migrateSuspendedProblems({ notify = false } = {}) {
+  const history = loadHistory();
+  const newlySuspended = [];
+  activeHistoryEntries(history).forEach(([problemId, state]) => {
+    if (isProblemSuspended(state) || wrongTransitionCount(state) < SUSPENSION_WRONG_TRANSITIONS) return;
+    state.wrongTransitionCount = wrongTransitionCount(state);
+    state.suspended = true;
+    state.suspendedAt = state.attempts?.[state.attempts.length - 1]?.at || Date.now();
+    newlySuspended.push(problemId);
+  });
+  if (!newlySuspended.length) return [];
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  newlySuspended.forEach((problemId) => markProgressDirty(problemId, "休止判定を保存"));
+  if (notify) setTimeout(() => {
+    alert(`${newlySuspended.length}問が「正解後の不正解」8回に達していたため休止になりました。\n問題一覧から休止を解除できます。`);
+  }, 0);
+  return newlySuspended;
 }
 
 function undoCurrentAnswer() {
@@ -836,7 +886,7 @@ function buildReviewScheduleBuckets(history) {
   const now = Date.now();
   const counts = new Map();
   activeHistoryEntries(history).forEach(([, state]) => {
-    if (!state?.attempts?.length) return;
+    if (!state?.attempts?.length || isProblemSuspended(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
@@ -864,7 +914,7 @@ function buildReviewIntervalBuckets(history) {
     { label: "31日以上", min: 31, max: Infinity, value: 0 },
   ];
   activeHistoryEntries(history).forEach(([, state]) => {
-    if (!state?.attempts?.length) return;
+    if (!state?.attempts?.length || isProblemSuspended(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
     const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
@@ -1013,6 +1063,7 @@ async function loadProblems() {
   problems.forEach((problem) => delete problem.genre_order);
   refreshGenres();
   repairReviewHistoryDueDates();
+  migrateSuspendedProblems({ notify: true });
 }
 
 async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
@@ -1865,6 +1916,8 @@ function renderAdminProblems() {
     const source = problemById.get(problem.source_id);
     const selected = problem.id === selectedManagedProblemId;
     const state = history[problem.id];
+    const transitionCount = wrongTransitionCount(state);
+    const suspended = isProblemSuspended(state);
     return `<tr data-id="${problem.id}" class="${selected ? "selected-problem-row" : ""}">
       <td><input class="problem-select" type="checkbox" value="${problem.id}" ${selectedManagementIds.has(problem.id) ? "checked" : ""}></td>
       <td><button class="problem-link" type="button" data-id="${problem.id}">${escapeHtml(problem.hand)}</button></td>
@@ -1872,9 +1925,12 @@ function renderAdminProblems() {
       <td>${formatDate(problem.created_at)}</td>
       <td>${formatDate(lastAttemptAt(state))}</td>
       <td>${formatDate(state?.dueAt)}</td>
+      <td class="problem-status-cell">${suspended
+        ? `<strong class="suspended-label">休止（${transitionCount}回）</strong><button type="button" class="resume-problem" data-id="${problem.id}">休止解除</button>`
+        : `<span>${transitionCount}/${SUSPENSION_WRONG_TRANSITIONS}</span>`}</td>
       <td>${source ? escapeHtml(source.hand) : "元問題"}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="7">登録済みの問題がありません。</td></tr>`;
+  }).join("") || `<tr><td colspan="8">登録済みの問題がありません。</td></tr>`;
   document.querySelectorAll(".problem-select").forEach((input) => input.addEventListener("change", () => {
     if (input.checked) selectedManagementIds.add(input.value); else selectedManagementIds.delete(input.value);
   }));
@@ -1884,6 +1940,9 @@ function renderAdminProblems() {
       renderAdminProblems();
       previewProblem(button.dataset.id);
     })
+  );
+  document.querySelectorAll(".resume-problem").forEach((button) =>
+    button.addEventListener("click", () => resumeProblem(button.dataset.id))
   );
   document.querySelectorAll(".sort-th").forEach((button) => {
     const active = managementSort.key === button.dataset.sort;
@@ -1897,6 +1956,24 @@ function renderAdminProblems() {
   if ($("management-prev")) $("management-prev").disabled = managementPage === 0;
   if ($("management-next")) $("management-next").disabled = managementPage >= pageCount - 1;
   renderGenreOrderEditor();
+}
+
+function resumeProblem(problemId) {
+  const history = loadHistory();
+  const state = history[problemId];
+  if (!isProblemSuspended(state)) return;
+  state.suspended = false;
+  state.wrongTransitionCount = 0;
+  delete state.suspendedAt;
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  markProgressDirty(problemId, "問題の休止を解除");
+  const message = $("manage-message");
+  if (message) {
+    message.className = "message ok";
+    message.textContent = "休止を解除しました。誤答カウントは0回に戻りました。";
+  }
+  renderAdminProblems();
+  refreshGenres();
 }
 
 function setAdminMessage(text, type) {
@@ -2439,6 +2516,7 @@ async function applySaveData(data, options = {}) {
     localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || DEFAULT_ADMIN_COUNT))));
     saveGenreOrder(normalized.g || [], false);
     repairReviewHistoryDueDates();
+    migrateSuspendedProblems({ notify: true });
     renderReviewSettings();
     renderAdminCount();
     if (currentView === "manage") renderAdminProblems();
@@ -2521,6 +2599,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
     });
     localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    migrateSuspendedProblems({ notify: true });
     if (settingsRecord) {
       const safeSettings = {
         first_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
@@ -3086,6 +3165,15 @@ function parseAnswerTiles(text) {
 
 function tileRank(tile) {
   return tile[0] === "0" ? 5 : Number(tile[0]);
+}
+
+function sortTilesForQuestion(tiles) {
+  const suitOrder = { m: 0, p: 1, s: 2, z: 3 };
+  return [...tiles].sort((left, right) =>
+    (suitOrder[left[1]] ?? 99) - (suitOrder[right[1]] ?? 99)
+    || tileRank(left) - tileRank(right)
+    || Number(left[0] === "0") - Number(right[0] === "0")
+  );
 }
 
 function normalizePhysicalTile(tile) {
