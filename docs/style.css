@@ -256,6 +256,9 @@ button.danger { color: var(--red); }
 .sort-th { background: transparent; border: 0; color: inherit; font: inherit; padding: 0; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .sort-th::after { content: "↕"; font-size: .75rem; opacity: .45; }
 .sort-th.active::after { opacity: .9; }
+.problem-status-cell { white-space: nowrap; }
+.problem-status-cell > * + * { margin-left: 8px; }
+.suspended-label { color: var(--red); }
 .management-table-wrap { overflow-x: auto; margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; }
 .management-table { width: 100%; min-width: 980px; border-collapse: collapse; background: white; }
 .management-table th, .management-table td { padding: 10px 12px; border-bottom: 1px solid #eee9df; text-align: left; }

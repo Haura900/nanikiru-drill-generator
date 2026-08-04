@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.google.com https://www.recaptcha.net; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google.com https://www.recaptcha.net; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.google.com https://recaptcha.google.com https://www.recaptcha.net; worker-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
-  <link rel="stylesheet" href="style.css?v=20260711-1">
+  <link rel="stylesheet" href="style.css?v=20260804-1">
 </head>
 <body>
   <header>
@@ -198,6 +198,7 @@
           <div><h2>問題管理</h2></div>
           <span id="manage-problem-count" class="count">0問</span>
         </div>
+        <div id="manage-message" class="message"></div>
         <div class="management-filters">
           <label>ジャンル<select id="manage-genre-filter"></select></label>
           <label>登録日（開始）<input id="manage-date-from" type="date"></label>
@@ -228,6 +229,7 @@
                 <th><button type="button" class="sort-th" data-sort="created_at">登録日</button></th>
                 <th><button type="button" class="sort-th" data-sort="last_attempt_at">前回解いた日</button></th>
                 <th><button type="button" class="sort-th" data-sort="due_at">次の出題日</button></th>
+                <th>状態</th>
                 <th><button type="button" class="sort-th" data-sort="source">加工元</button></th>
               </tr>
             </thead>
@@ -377,8 +379,8 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260711-1"></script>
-  <script type="module" src="firebase-sync.js?v=20260711-1"></script>
-  <script src="app.js?v=20260711-1"></script>
+  <script src="version.js?v=20260804-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260804-1"></script>
+  <script src="app.js?v=20260804-1"></script>
 </body>
 </html>

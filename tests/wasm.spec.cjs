@@ -591,6 +591,78 @@ test("cancelling a first answer removes the new learning record", async ({ page 
   await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
 });
 
+test("quiz display sorts red fives between five and six regardless of mpsz order", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "red-order", hand: "6057s6057p6057m11z", answers: ["5m"], primary_answer: "5m", genre: "red-order",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      "red-order": { attempts: [{ at: Date.now() - 86400000, correct: true, genre: "red-order" }], dueAt: Date.now() - 1000 },
+    }));
+  });
+
+  await page.goto("http://127.0.0.1:18765/");
+  const displayedTiles = await page.locator("#hand button.tile img").evaluateAll((images) => images.map((image) => image.alt));
+  expect(displayedTiles).toEqual([
+    "5m", "0m", "6m", "7m",
+    "5p", "0p", "6p", "7p",
+    "5s", "0s", "6s", "7s",
+    "1z", "1z",
+  ]);
+});
+
+test("only correct-to-wrong transitions count and the eighth suspends until resumed", async ({ page }) => {
+  const now = Date.now();
+  const attempts = [];
+  for (let index = 0; index < 7; index++) {
+    attempts.push({ at: now - (16 - index * 2) * 86400000, correct: true, genre: "suspension" });
+    attempts.push({ at: now - (15 - index * 2) * 86400000, correct: false, genre: "suspension" });
+  }
+  attempts.push({ at: now - 2 * 86400000, correct: true, genre: "suspension" });
+  await page.addInitScript(({ attempts }) => {
+    localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
+      id: "suspension", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "suspension",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }]));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      suspension: { attempts, dueAt: Date.now() - 1000 },
+    }));
+  }, { attempts });
+
+  await page.goto("http://127.0.0.1:18765/");
+  expect(await page.evaluate(() => wrongTransitionCount({ attempts: [
+    { correct: false }, { correct: false }, { correct: true }, { correct: false }, { correct: false },
+  ] }))).toBe(1);
+
+  const dialogPromise = new Promise((resolve) => page.once("dialog", async (dialog) => {
+    const message = dialog.message();
+    await dialog.accept();
+    resolve(message);
+  }));
+  await page.locator("#hand button.tile[data-tile='2m']").click();
+  expect(await dialogPromise).toContain("8回");
+
+  const suspended = await page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
+    return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
+  });
+  expect(suspended.state.suspended).toBe(true);
+  expect(suspended.state.wrongTransitionCount).toBe(8);
+  expect(suspended.dueIds).not.toContain("suspension");
+
+  await page.evaluate(() => showView("manage"));
+  await expect(page.locator(".suspended-label")).toContainText("休止");
+  await page.locator(".resume-problem").click();
+  const resumed = await page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
+    return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
+  });
+  expect(resumed.state.suspended).toBe(false);
+  expect(resumed.state.wrongTransitionCount).toBe(0);
+  expect(resumed.dueIds).toContain("suspension");
+});
+
 test("restored text cannot create script or event attributes", async ({ page }) => {
   const attacks = [
     '<img src=x onerror="window.__xss=1">',
