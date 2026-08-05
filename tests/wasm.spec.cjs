@@ -1,6 +1,14 @@
 const { test, expect } = require("@playwright/test");
 const zlib = require("node:zlib");
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("nanikiru-review-settings-v1")) {
+      localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({ quiz_random_transform: false }));
+    }
+  });
+});
+
 test("mahjong wasm runs in a browser", async ({ page }) => {
   const cspViolations = [];
   page.on("console", (message) => { if (/Content Security Policy|Refused to/i.test(message.text())) cspViolations.push(message.text()); });
@@ -281,13 +289,120 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
         degree: 4,
       }
     );
-    return { blocks, transformed, specs: randomTransformSpecs(hand, 40) };
+    const presentation = buildQuizProblemPresentation({
+      hand: "123m456p789s11122z",
+      answers: ["1m"],
+      primary_answer: "1m",
+      melds: [{ type: 1, name: "チー", tiles: ["1m", "2m", "3m"], mpsz: "123m" }],
+      note: "候補 1m 2p 3s",
+      prompt_note: "注目 1m",
+      settings: { dora_indicators: ["1m"] },
+      simulator: {
+        best_discards: ["1m"],
+        rows: [{ tile: "1m", necessary_tiles: [{ tile: "2p", count: 4 }] }],
+      },
+    }, { quiz_random_transform: true }, (() => {
+      const values = [0.5, 0.1];
+      return () => values.shift();
+    })());
+    return { blocks, transformed, presentation, specs: randomTransformSpecs(hand, 40) };
   });
   expect(result.blocks).toEqual(["45m", "2344p", "779p", "233s", "68s"]);
   expect(result.transformed.answers).toEqual(["3s", "1s"]);
   expect(result.transformed.melds.map((meld) => meld.mpsz)).toEqual(["789p", "777z"]);
   expect(result.specs).toHaveLength(40);
   expect(result.specs.every((spec) => spec.degree > 0)).toBe(true);
+  expect(result.specs.every((spec) => spec.suit_map.m === "m" && spec.suit_map.p === "p" && spec.suit_map.s === "s")).toBe(true);
+  expect(result.specs.every((spec) => spec.reverse_suits.length <= 2)).toBe(true);
+  expect(result.presentation.hand).toBe("123m789p456s11122z");
+  expect(result.presentation.answers).toEqual(["9p"]);
+  expect(result.presentation.melds[0].mpsz).toBe("789p");
+  expect(result.presentation.settings.dora_indicators).toEqual(["7p"]);
+  expect(result.presentation.note).toContain("9p");
+  expect(result.presentation.note).toContain("8s");
+  expect(result.presentation.note).toContain("7m");
+  expect(result.presentation.prompt_note).toContain("9p");
+  expect(result.presentation.simulator.best_discards).toEqual(["9p"]);
+  expect(result.presentation.simulator.rows[0].tile).toBe("9p");
+  expect(result.presentation.simulator.rows[0].necessary_tiles[0].tile).toBe("8s");
+});
+
+test("data settings persist the suspension threshold and quiz random transform toggle", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => showView("export"));
+  await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
+  await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
+  await page.locator("#review-suspension-wrong-transitions").fill("12");
+  await page.locator("#quiz-random-transform").check();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")));
+  expect(stored.suspension_wrong_transitions).toBe(12);
+  expect(stored.quiz_random_transform).toBe(true);
+  await page.reload();
+  await page.evaluate(() => showView("export"));
+  await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
+  await expect(page.locator("#quiz-random-transform")).toBeChecked();
+});
+
+test("legacy cloud settings load with defaults for newly added settings", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.waitForFunction(() => window.NanikiruSaveData);
+  await page.evaluate(async () => {
+    await window.NanikiruSaveData.applyCloudRecords({
+      settingsRecord: {
+        reviewSettings: {
+          first_correct_days: 11,
+          wrong_retry_days: 2,
+          wrong_then_correct_days: 4,
+          repeat_multiplier: 5,
+        },
+        adminCount: 9,
+        genreOrder: ["旧設定"],
+      },
+    });
+  });
+  const stored = await page.evaluate(() => ({
+    review: JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")),
+    adminCount: localStorage.getItem("nanikiru-admin-count-v1"),
+    genreOrder: JSON.parse(localStorage.getItem("nanikiru-genre-order-v1")),
+  }));
+  expect(stored.review).toEqual({
+    first_correct_days: 11,
+    wrong_retry_days: 2,
+    wrong_then_correct_days: 4,
+    repeat_multiplier: 5,
+    suspension_wrong_transitions: 8,
+    quiz_random_transform: true,
+  });
+  expect(stored.adminCount).toBe("9");
+  expect(stored.genreOrder).toEqual(["旧設定"]);
+});
+
+test("quiz accepts the transformed answer tile", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => {
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({ quiz_random_transform: true }));
+    const problem = {
+      id: "transformed-answer",
+      hand: "123m456p789s11122z",
+      answers: ["1m"],
+      primary_answer: "1m",
+      genre: "transform",
+      melds: [],
+      settings: { round_wind: "1z", seat_wind: "2z", dora_indicators: [] },
+    };
+    problems = [problem];
+    currentProblem = problem;
+    currentQuizContext = { mode: "genre", genre: "transform" };
+    const values = [0.5, 0.1, 0];
+    const originalRandom = Math.random;
+    Math.random = () => values.shift() ?? 0;
+    renderQuestion(problem, null);
+    Math.random = originalRandom;
+  });
+  await page.locator("#hand .tile[data-tile='9p']").click();
+  await expect(page.locator("#answer-result")).toContainText("正解");
+  const attempt = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["transformed-answer"].attempts[0]);
+  expect(attempt.correct).toBe(true);
 });
 
 test("similar-problem generation uses the browser simulator path", async ({ page }) => {
@@ -633,15 +748,19 @@ test("drawn tile candidates use sequence ends and triplets but not incomplete sh
   });
 });
 
-test("only correct-to-wrong transitions count and the eighth suspends until resumed", async ({ page }) => {
+test("only correct-to-wrong transitions count and the configured threshold suspends until resumed", async ({ page }) => {
   const now = Date.now();
   const attempts = [];
-  for (let index = 0; index < 7; index++) {
+  for (let index = 0; index < 2; index++) {
     attempts.push({ at: now - (16 - index * 2) * 86400000, correct: true, genre: "suspension" });
     attempts.push({ at: now - (15 - index * 2) * 86400000, correct: false, genre: "suspension" });
   }
   attempts.push({ at: now - 2 * 86400000, correct: true, genre: "suspension" });
   await page.addInitScript(({ attempts }) => {
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      suspension_wrong_transitions: 3,
+      quiz_random_transform: false,
+    }));
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "suspension", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "suspension",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -662,14 +781,14 @@ test("only correct-to-wrong transitions count and the eighth suspends until resu
     resolve(message);
   }));
   await page.locator("#hand button.tile[data-tile='2m']").click();
-  expect(await dialogPromise).toContain("8回");
+  expect(await dialogPromise).toContain("3回");
 
   const suspended = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
   });
   expect(suspended.state.suspended).toBe(true);
-  expect(suspended.state.wrongTransitionCount).toBe(8);
+  expect(suspended.state.wrongTransitionCount).toBe(3);
   expect(suspended.dueIds).not.toContain("suspension");
 
   await page.evaluate(() => showView("manage"));

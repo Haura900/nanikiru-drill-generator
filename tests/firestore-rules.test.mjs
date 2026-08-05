@@ -11,6 +11,36 @@ beforeEach(async () => env.clearFirestore());
 const catalog = (ids) => ({ schemaVersion: 2, problemIds: ids, updatedAt: serverTimestamp(), updatedBy: "device-12345678" });
 const problem = (id, overrides = {}) => ({ schemaVersion: 2, problemId: id, payload: '{"hand":"123m"}', modifiedAt: 10, mutationId: "10-12345678-1234-1234-1234-123456789012", updatedAt: serverTimestamp(), updatedBy: "device-12345678", deleted: false, ...overrides });
 const progress = (id, overrides = {}) => ({ schemaVersion: 2, problemId: id, payload: '{"attempts":[],"dueAt":1}', answeredAt: 10, mutationId: "10-12345678-1234-1234-1234-123456789012", updatedAt: serverTimestamp(), updatedBy: "device-12345678", deleted: false, ...overrides });
+const settings = (overrides = {}) => ({
+  schemaVersion: 2,
+  reviewSettings: {
+    first_correct_days: 7,
+    wrong_retry_days: 0,
+    wrong_then_correct_days: 1,
+    repeat_multiplier: 3,
+    suspension_wrong_transitions: 8,
+    quiz_random_transform: false,
+  },
+  adminCount: 3,
+  genreOrder: [],
+  payload: JSON.stringify({
+    reviewSettings: {
+      first_correct_days: 7,
+      wrong_retry_days: 0,
+      wrong_then_correct_days: 1,
+      repeat_multiplier: 3,
+      suspension_wrong_transitions: 8,
+      quiz_random_transform: false,
+    },
+    adminCount: 3,
+    genreOrder: [],
+  }),
+  modifiedAt: 10,
+  mutationId: "10-12345678-1234-1234-1234-123456789012",
+  updatedAt: serverTimestamp(),
+  updatedBy: "device-12345678",
+  ...overrides,
+});
 
 test("未認証と他人のUIDを拒否", async () => {
   await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "users/a/sync/catalog")));
@@ -28,6 +58,21 @@ test("catalog未登録IDと未定義パスを拒否", async () => {
   const db = env.authenticatedContext("a").firestore();
   await assertFails(setDoc(doc(db, "users/a/problems/p1"), problem("p1")));
   await assertFails(setDoc(doc(db, "users/a/other/x"), { value: 1 }));
+});
+
+test("復習・出題設定の休止回数とランダム変換を検証", async () => {
+  const ref = doc(env.authenticatedContext("a").firestore(), "users/a/settings/main");
+  await assertSucceeds(setDoc(ref, settings()));
+  const legacy = settings();
+  delete legacy.payload;
+  delete legacy.reviewSettings.suspension_wrong_transitions;
+  delete legacy.reviewSettings.quiz_random_transform;
+  await assertSucceeds(setDoc(ref, legacy));
+  await assertFails(setDoc(ref, settings({ reviewSettings: { ...settings().reviewSettings, suspension_wrong_transitions: 0 } })));
+  await assertFails(setDoc(ref, settings({ reviewSettings: { ...settings().reviewSettings, quiz_random_transform: "yes" } })));
+  await assertFails(setDoc(ref, settings({ payload: "x" })));
+  await assertFails(setDoc(ref, settings({ payload: "x".repeat(400001) })));
+  await assertSucceeds(setDoc(ref, settings({ payload: JSON.stringify({ futureSection: { enabled: true } }) })));
 });
 
 test("catalog 10001件、重複、既存ID削除を拒否", async () => {

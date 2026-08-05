@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.google.com https://www.recaptcha.net; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google.com https://www.recaptcha.net; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.google.com https://recaptcha.google.com https://www.recaptcha.net; worker-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
-  <link rel="stylesheet" href="style.css?v=20260804-2">
+  <link rel="stylesheet" href="style.css?v=20260805-1">
 </head>
 <body>
   <header>
@@ -273,8 +273,8 @@
         </section>
 
         <div class="review-settings">
-          <h3>復習の間隔</h3>
-          <p class="description">ここで復習の出題間隔を調整します。</p>
+          <h3>復習・出題設定</h3>
+          <p class="description">復習の出題間隔、問題を休止する回数、出題時のランダム加工を調整します。</p>
           <div class="review-settings-grid">
             <label>初見正解の間隔（日）
               <input id="review-first-correct-days" type="number" min="0" step="1">
@@ -288,7 +288,15 @@
             <label>復習の伸び率
               <input id="review-repeat-multiplier" type="number" min="0" step="0.1">
             </label>
+            <label>休止までの誤答回数
+              <input id="review-suspension-wrong-transitions" type="number" min="1" max="1000" step="1">
+            </label>
           </div>
+          <label class="inline-option quiz-transform-setting">
+            <input id="quiz-random-transform" type="checkbox">
+            出題ごとにマンズ・ピンズ・ソーズをシャッフルし、数牌全体の上下反転をランダム適用する
+          </label>
+          <small>色の置換6通り × 数値反転あり/なしの12通りから選びます。数値反転はマンズ・ピンズ・ソーズの3種類へ必ず一斉に適用します。</small>
         </div>
         
         <div class="data-output-section">
@@ -332,7 +340,7 @@
         <ul>
           <li><strong>出題</strong>：ジャンル別に何切る問題を出題します</li>
           <li><strong>復習</strong>：忘却曲線に基づいた間隔で復習問題を出題します</li>
-          <li><strong>類題自動生成</strong>：元問題を反転・置換・スライドして作った候補を、何切るシミュレーターで確認してから登録します</li>
+          <li><strong>類題自動生成</strong>：元問題を部分反転・ブロックずらしして作った候補を、何切るシミュレーターで確認してから登録します</li>
           <li><strong>成績管理</strong>：ジャンル別、日付別の成績を見やすく確認できます</li>
           <li><strong>データ保存</strong>：ログインなしではこのブラウザに保存し、Googleログイン時は端末間で同期できます</li>
         </ul>
@@ -379,8 +387,8 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260804-2"></script>
-  <script type="module" src="firebase-sync.js?v=20260804-2"></script>
-  <script src="app.js?v=20260804-2"></script>
+  <script src="version.js?v=20260805-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260805-1"></script>
+  <script src="app.js?v=20260805-1"></script>
 </body>
 </html>
