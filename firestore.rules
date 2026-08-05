@@ -64,18 +64,24 @@ service cloud.firestore {
     match /users/{uid}/settings/main {
       allow read: if owner(uid);
       allow create, update: if owner(uid)
-        && request.resource.data.keys().hasOnly(['schemaVersion', 'reviewSettings', 'adminCount', 'genreOrder', 'modifiedAt', 'mutationId', 'updatedAt', 'updatedBy'])
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'reviewSettings', 'adminCount', 'genreOrder', 'payload', 'modifiedAt', 'mutationId', 'updatedAt', 'updatedBy'])
         && validCommon(request.resource.data)
         && request.resource.data.modifiedAt is int && request.resource.data.modifiedAt > 0
         && validMutation(request.resource.data.mutationId)
         && request.resource.data.adminCount is int && request.resource.data.adminCount >= 1 && request.resource.data.adminCount <= 100
         && request.resource.data.genreOrder is list && request.resource.data.genreOrder.size() <= 10000
         && request.resource.data.genreOrder.join('').size() <= 1000000
-        && request.resource.data.reviewSettings.keys().hasOnly(['first_correct_days', 'wrong_retry_days', 'wrong_then_correct_days', 'repeat_multiplier'])
+        && request.resource.data.reviewSettings.keys().hasOnly(['first_correct_days', 'wrong_retry_days', 'wrong_then_correct_days', 'repeat_multiplier', 'suspension_wrong_transitions', 'quiz_random_transform'])
         && request.resource.data.reviewSettings.first_correct_days is number && request.resource.data.reviewSettings.first_correct_days >= 0 && request.resource.data.reviewSettings.first_correct_days <= 36500
         && request.resource.data.reviewSettings.wrong_retry_days is number && request.resource.data.reviewSettings.wrong_retry_days >= 0 && request.resource.data.reviewSettings.wrong_retry_days <= 36500
         && request.resource.data.reviewSettings.wrong_then_correct_days is number && request.resource.data.reviewSettings.wrong_then_correct_days >= 0 && request.resource.data.reviewSettings.wrong_then_correct_days <= 36500
-        && request.resource.data.reviewSettings.repeat_multiplier is number && request.resource.data.reviewSettings.repeat_multiplier >= 0 && request.resource.data.reviewSettings.repeat_multiplier <= 100;
+        && request.resource.data.reviewSettings.repeat_multiplier is number && request.resource.data.reviewSettings.repeat_multiplier >= 0 && request.resource.data.reviewSettings.repeat_multiplier <= 100
+        && (!request.resource.data.reviewSettings.keys().hasAny(['suspension_wrong_transitions'])
+          || (request.resource.data.reviewSettings.suspension_wrong_transitions is int && request.resource.data.reviewSettings.suspension_wrong_transitions >= 1 && request.resource.data.reviewSettings.suspension_wrong_transitions <= 1000))
+        && (!request.resource.data.reviewSettings.keys().hasAny(['quiz_random_transform'])
+          || request.resource.data.reviewSettings.quiz_random_transform is bool)
+        && (!request.resource.data.keys().hasAny(['payload'])
+          || (request.resource.data.payload is string && request.resource.data.payload.size() >= 2 && request.resource.data.payload.size() <= 400000));
       allow delete: if owner(uid);
     }
 

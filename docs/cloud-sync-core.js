@@ -5,7 +5,40 @@ export const CLOUD_SCHEMA_VERSION = 2;
 export const MAX_PROBLEMS_PER_USER = 10000;
 export const MAX_PROBLEM_PAYLOAD_CHARS = 750000;
 export const MAX_PROGRESS_PAYLOAD_CHARS = 200000;
+export const MAX_SETTINGS_PAYLOAD_CHARS = 400000;
 export const DEFAULT_ADMIN_COUNT = 3;
+
+function settingsObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+export function mergeSettingsPayload(preserved, current) {
+  const previous = settingsObject(preserved);
+  const next = settingsObject(current);
+  return {
+    ...previous,
+    ...next,
+    reviewSettings: {
+      ...settingsObject(previous.reviewSettings),
+      ...settingsObject(next.reviewSettings),
+    },
+  };
+}
+
+export function decodeSettingsRecord(record) {
+  const legacy = {
+    reviewSettings: settingsObject(record?.reviewSettings),
+    adminCount: record?.adminCount,
+    genreOrder: record?.genreOrder,
+  };
+  if (typeof record?.payload !== "string" || !record.payload) return legacy;
+  try {
+    const decoded = JSON.parse(record.payload);
+    return mergeSettingsPayload(legacy, settingsObject(decoded));
+  } catch {
+    return legacy;
+  }
+}
 
 export function compareMutationVersion(left, right, timeField = "modifiedAt") {
   const leftTime = Number(left?.[timeField] || 0);

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   CLOUD_CHUNK_SIZE, decideStartupSync, splitEncodedSave, joinAndValidateChunks, shouldCacheActiveData,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState, mergeStateMaps, decomposeLegacySave,
+  decodeSettingsRecord, mergeSettingsPayload,
 } from "../docs/cloud-sync-core.js";
 
 const hash = async (value) => createHash("sha256").update(value).digest("hex");
@@ -67,6 +68,42 @@ test("tombstoneより古い状態では復活しない", () => {
   const tombstone = { modifiedAt: 20, mutationId: "delete", deleted: true };
   const stale = { modifiedAt: 19, mutationId: "edit", deleted: false };
   assert.equal(chooseProblemState(stale, tombstone).deleted, true);
+});
+
+test("新設定payloadを優先し、将来の未知フィールドを維持する", () => {
+  const legacy = {
+    reviewSettings: { first_correct_days: 7, wrong_retry_days: 1 },
+    adminCount: 3,
+    genreOrder: ["legacy"],
+  };
+  assert.deepEqual(decodeSettingsRecord(legacy), legacy);
+
+  const record = {
+    ...legacy,
+    payload: JSON.stringify({
+      reviewSettings: { first_correct_days: 14, future_toggle: true },
+      adminCount: 5,
+      genreOrder: ["new"],
+      futureSection: { mode: "advanced" },
+    }),
+  };
+  assert.deepEqual(decodeSettingsRecord(record), {
+    reviewSettings: { first_correct_days: 14, wrong_retry_days: 1, future_toggle: true },
+    adminCount: 5,
+    genreOrder: ["new"],
+    futureSection: { mode: "advanced" },
+  });
+
+  assert.deepEqual(mergeSettingsPayload(decodeSettingsRecord(record), {
+    reviewSettings: { first_correct_days: 21 },
+    adminCount: 8,
+    genreOrder: ["current"],
+  }), {
+    reviewSettings: { first_correct_days: 21, wrong_retry_days: 1, future_toggle: true },
+    adminCount: 8,
+    genreOrder: ["current"],
+    futureSection: { mode: "advanced" },
+  });
 });
 
 test("旧snapshot v5を問題・履歴・設定へ分解", () => {

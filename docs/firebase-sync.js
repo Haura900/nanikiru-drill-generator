@@ -7,10 +7,10 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 import { firebaseConfig, appCheckConfig, isFirebaseConfigured } from "./firebase-config.js?v=20260712-1";
 import {
-  CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS,
+  CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS, MAX_SETTINGS_PAYLOAD_CHARS,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
-  nextMutationVersion, joinAndValidateChunks, decomposeLegacySave,
-} from "./cloud-sync-core.js?v=20260712-1";
+  nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
+} from "./cloud-sync-core.js?v=20260805-1";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
 const BOUND_UID_KEY = "nanikiru-bound-uid-v1";
@@ -135,6 +135,30 @@ function progressRecord(problemId, value, version) {
   return { schemaVersion: 2, problemId, payload, answeredAt: version.answeredAt, mutationId: version.mutationId, updatedAt: serverTimestamp(), updatedBy: deviceId, deleted: Boolean(version.deleted) };
 }
 
+function settingsRecord(value, version) {
+  const payload = JSON.stringify(value);
+  const reviewSettings = {};
+  [
+    "first_correct_days", "wrong_retry_days", "wrong_then_correct_days", "repeat_multiplier",
+    "suspension_wrong_transitions", "quiz_random_transform",
+  ].forEach((key) => {
+    if (Object.hasOwn(value.reviewSettings || {}, key)) reviewSettings[key] = value.reviewSettings[key];
+  });
+  const record = {
+    schemaVersion: CLOUD_SCHEMA_VERSION,
+    // 従来クライアント向けのミラー。今後追加する設定はpayloadだけに入れる。
+    reviewSettings,
+    adminCount: value.adminCount,
+    genreOrder: value.genreOrder,
+    ...version,
+    updatedAt: serverTimestamp(),
+    updatedBy: deviceId,
+  };
+  // 非常に大きい旧データは従来形式のまま同期し、Firestoreの1 MiB上限を超えないようにする。
+  if (payload.length <= MAX_SETTINGS_PAYLOAD_CHARS) record.payload = payload;
+  return record;
+}
+
 async function uploadRecord({ uid, id, local, ref, chooser, timeField, dirtyKey, versionsKey }) {
   let remoteWinner = null;
   await runTransaction(db, async (transaction) => {
@@ -179,10 +203,11 @@ async function syncDirty(uid) {
   const dirtySettings = readObject(DIRTY_SETTINGS_KEY);
   if (dirtySettings.mutationId) {
     const value = api.getSettings();
-    const local = { schemaVersion: 2, ...value, ...dirtySettings, updatedAt: serverTimestamp(), updatedBy: deviceId };
+    let local = null;
     let remoteWinner = null;
     await runTransaction(db, async (transaction) => {
       const ref = settingsRef(uid); const snapshot = await transaction.get(ref); const remote = snapshot.exists() ? snapshot.data() : null;
+      local = settingsRecord(mergeSettingsPayload(decodeSettingsRecord(remote), value), dirtySettings);
       if (chooseSettingsState(local, remote) === local) transaction.set(ref, local); else remoteWinner = remote;
     });
     if (readObject(DIRTY_SETTINGS_KEY).mutationId === dirtySettings.mutationId) localStorage.removeItem(DIRTY_SETTINGS_KEY);
@@ -212,7 +237,7 @@ async function applyRemoteRecords(record, type) {
       const dirty = readObject(DIRTY_PROGRESS_KEY); if (dirty[record.problemId] && compareMutationVersion(record, dirty[record.problemId], "answeredAt") >= 0) { delete dirty[record.problemId]; writeObject(DIRTY_PROGRESS_KEY, dirty); }
     } else {
       const local = readObject(SETTINGS_VERSION_KEY); if (compareMutationVersion(record, local, "modifiedAt") < 0) return;
-      await api.applyCloudRecords({ settingsRecord: { reviewSettings: record.reviewSettings, adminCount: record.adminCount, genreOrder: record.genreOrder } });
+      await api.applyCloudRecords({ settingsRecord: decodeSettingsRecord(record) });
       writeObject(SETTINGS_VERSION_KEY, { modifiedAt: record.modifiedAt, mutationId: record.mutationId });
     }
   } finally { applyingCloud = false; }
@@ -264,7 +289,7 @@ async function flushRemoteRecords() {
   });
   let settingsRecord = null;
   if (settings && compareMutationVersion(settings, readObject(SETTINGS_VERSION_KEY), "modifiedAt") >= 0) {
-    settingsRecord = { reviewSettings: settings.reviewSettings, adminCount: settings.adminCount, genreOrder: settings.genreOrder };
+    settingsRecord = decodeSettingsRecord(settings);
   }
   applyingCloud = true;
   try {

@@ -6,21 +6,31 @@ const REVIEW_SETTINGS_KEY = "nanikiru-review-settings-v1";
 const ADMIN_COUNT_KEY = "nanikiru-admin-count-v1";
 const DEFAULT_ADMIN_COUNT = 3;
 const GENRE_ORDER_KEY = "nanikiru-genre-order-v1";
+const SUIT_PERMUTATIONS = Object.freeze([
+  Object.freeze({ m: "m", p: "p", s: "s" }),
+  Object.freeze({ m: "m", p: "s", s: "p" }),
+  Object.freeze({ m: "p", p: "m", s: "s" }),
+  Object.freeze({ m: "p", p: "s", s: "m" }),
+  Object.freeze({ m: "s", p: "m", s: "p" }),
+  Object.freeze({ m: "s", p: "p", s: "m" }),
+]);
 const MAX_BACKUP_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_DECOMPRESSED_BACKUP_BYTES = 100 * 1024 * 1024;
 const MAX_BACKUP_TEXT_CHARS = MAX_DECOMPRESSED_BACKUP_BYTES;
 const MAX_BACKUP_BASE64_CHARS = Math.ceil(MAX_BACKUP_FILE_BYTES * 4 / 3) + 16;
 const MANAGEMENT_PAGE_SIZE = 200;
-const SUSPENSION_WRONG_TRANSITIONS = 8;
 let suppressCloudUpload = false;
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
   wrong_retry_days: 0,
   wrong_then_correct_days: 1,
   repeat_multiplier: 3,
+  suspension_wrong_transitions: 8,
+  quiz_random_transform: true,
 });
 let problems = [];
 let currentProblem = null;
+let currentPresentedProblem = null;
 let currentView = "quiz";
 let currentQuizContext = null;
 let filteredManagementProblems = [];
@@ -270,33 +280,35 @@ function showQuestionFromPool(pool, reviewMode) {
 
 function renderQuestion(problem, state) {
   activeAnswerUndo = null;
+  currentPresentedProblem = buildQuizProblemPresentation(problem, loadReviewSettings());
+  const presentedProblem = currentPresentedProblem;
   $("quiz-empty").classList.add("hidden");
   $("question-card").classList.remove("hidden");
   $("question-genre").textContent = "";
   $("question-genre").classList.add("hidden");
   $("question-status").innerHTML = renderQuestionStatus(problem, state);
-  $("question-winds").innerHTML = renderQuestionWinds(problem.settings || {});
+  $("question-winds").innerHTML = renderQuestionWinds(presentedProblem.settings || {});
   $("question-winds").classList.toggle("hidden", !$("question-winds").innerHTML);
   $("question-next-cta").classList.add("hidden");
   $("answer-result").className = "result hidden";
   $("answer-result").innerHTML = "";
   $("quiz-simulator-result").className = "simulator-result hidden";
   $("quiz-simulator-result").innerHTML = "";
-  $("question-prompt-note").textContent = problem.prompt_note || "";
-  $("question-prompt-note").classList.toggle("hidden", !problem.prompt_note);
+  $("question-prompt-note").textContent = presentedProblem.prompt_note || "";
+  $("question-prompt-note").classList.toggle("hidden", !presentedProblem.prompt_note);
   $("skip-review-question").classList.toggle("hidden", currentQuizContext?.mode !== "review");
   $("skip-review-question").classList.toggle("hidden", currentQuizContext?.mode !== "review");
-  const doraIndicators = problem.settings?.dora_indicators || [];
+  const doraIndicators = presentedProblem.settings?.dora_indicators || [];
   const doraHtml = doraIndicators.length
     ? `<div class="question-dora"><span>ドラ表示牌</span><div class="concealed-hand">${doraIndicators.map((tile) => `
         <span class="dora-tile">${tileImage(tile)}</span>
       `).join("")}</div></div>`
     : "";
-  const meldHtml = renderMelds(problem.melds || []);
-  const { concealedTiles, drawnTile } = selectDrawnTileForQuestion(parseMpsz(problem.hand));
+  const meldHtml = renderMelds(presentedProblem.melds || []);
+  const { concealedTiles, drawnTile } = selectDrawnTileForQuestion(parseMpsz(presentedProblem.hand));
   $("hand").innerHTML = `<div class="question-topline">${doraHtml}</div><div class="question-hand-row"><div class="concealed-hand">${concealedTiles.map((tile) => `
-    ${renderQuestionTile(tile, problem.settings || {})}
-  `).join("")}${drawnTile ? renderQuestionTile(drawnTile, problem.settings || {}, true) : ""}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
+    ${renderQuestionTile(tile, presentedProblem.settings || {})}
+  `).join("")}${drawnTile ? renderQuestionTile(drawnTile, presentedProblem.settings || {}, true) : ""}</div>${meldHtml ? `<div class="question-melds">${meldHtml}</div>` : ""}</div>`;
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.addEventListener("click", () => answerQuestion(button.dataset.tile, button));
   });
@@ -336,7 +348,8 @@ function renderQuestionStatus(problem, state) {
 
 function answerQuestion(tile, clickedButton) {
   if (!currentProblem) return;
-  const answers = currentProblem.answers || [currentProblem.primary_answer];
+  const presentedProblem = currentPresentedProblem || currentProblem;
+  const answers = presentedProblem.answers || [presentedProblem.primary_answer];
   const correct = answers.some((answer) => samePhysicalTile(answer, tile));
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.disabled = true;
@@ -352,7 +365,7 @@ function answerQuestion(tile, clickedButton) {
   result.className = `result ${correct ? "correct" : "wrong"}`;
   const answerText = answers.join("・");
   const dueText = recorded.suspendedNow
-    ? "誤答カウントが8回に達したため休止しました"
+    ? `誤答カウントが${recorded.suspensionThreshold}回に達したため休止しました`
     : dueAt <= Date.now() + 1000
       ? "すぐに復習対象になります"
       : `次回: ${new Date(dueAt).toLocaleString("ja-JP")}`;
@@ -365,7 +378,7 @@ function answerQuestion(tile, clickedButton) {
     <p>ジャンル: ${escapeHtml(currentProblem.genre || "未分類")}</p>
     <p>正解として設定された打牌: ${escapeHtml(answerText)} ／ ${escapeHtml(dueText)}</p>
     ${postReviewText ? `<p>${postReviewText}</p>` : ""}
-    ${currentProblem.note ? `<p>${renderTextWithTiles(currentProblem.note)}</p>` : ""}
+    ${presentedProblem.note ? `<p>${renderTextWithTiles(presentedProblem.note)}</p>` : ""}
     <div class="result-actions">
       <button id="undo-current-answer" type="button">解答取消</button>
       <button id="edit-current-problem" type="button">問題編集</button>
@@ -378,13 +391,13 @@ function answerQuestion(tile, clickedButton) {
   $("question-next-cta").classList.remove("hidden");
   renderSimulatorTable(
     $("quiz-simulator-result"),
-    currentProblem.simulator,
+    presentedProblem.simulator,
     answers,
     tile
   );
   renderGenreQuizTable();
   if (recorded.suspendedNow) {
-    alert("この問題は「正解後の不正解」が8回に達したため休止しました。\n問題一覧から休止を解除できます。");
+    alert(`この問題は「正解後の不正解」が${recorded.suspensionThreshold}回に達したため休止しました。\n問題一覧から休止を解除できます。`);
   }
 }
 
@@ -445,7 +458,8 @@ function recordAttempt(problem, correct) {
   const previousWrongTransitionCount = wrongTransitionCount(state);
   const countsAsWrongTransition = !correct && previous?.correct === true;
   const nextWrongTransitionCount = previousWrongTransitionCount + (countsAsWrongTransition ? 1 : 0);
-  const suspendedNow = !isProblemSuspended(state) && nextWrongTransitionCount >= SUSPENSION_WRONG_TRANSITIONS;
+  const suspensionThreshold = reviewSettings.suspension_wrong_transitions;
+  const suspendedNow = !isProblemSuspended(state) && nextWrongTransitionCount >= suspensionThreshold;
   let dueAt;
   if (!correct) {
     dueAt = now + reviewSettings.wrong_retry_days * DAY;
@@ -474,6 +488,7 @@ function recordAttempt(problem, correct) {
   return {
     dueAt,
     suspendedNow,
+    suspensionThreshold,
     undo: {
       problemId: problem.id,
       attemptAt: now,
@@ -499,23 +514,32 @@ function isProblemSuspended(state) {
   return state?.suspended === true;
 }
 
-function migrateSuspendedProblems({ notify = false } = {}) {
+function reconcileSuspendedProblems({ notify = false } = {}) {
   const history = loadHistory();
+  const threshold = loadReviewSettings().suspension_wrong_transitions;
   const newlySuspended = [];
+  const newlyResumed = [];
   activeHistoryEntries(history).forEach(([problemId, state]) => {
-    if (isProblemSuspended(state) || wrongTransitionCount(state) < SUSPENSION_WRONG_TRANSITIONS) return;
-    state.wrongTransitionCount = wrongTransitionCount(state);
-    state.suspended = true;
-    state.suspendedAt = state.attempts?.[state.attempts.length - 1]?.at || Date.now();
-    newlySuspended.push(problemId);
+    const count = wrongTransitionCount(state);
+    if (!isProblemSuspended(state) && count >= threshold) {
+      state.wrongTransitionCount = count;
+      state.suspended = true;
+      state.suspendedAt = state.attempts?.[state.attempts.length - 1]?.at || Date.now();
+      newlySuspended.push(problemId);
+    } else if (isProblemSuspended(state) && count < threshold) {
+      state.suspended = false;
+      delete state.suspendedAt;
+      newlyResumed.push(problemId);
+    }
   });
-  if (!newlySuspended.length) return [];
+  const changedIds = [...newlySuspended, ...newlyResumed];
+  if (!changedIds.length) return { newlySuspended, newlyResumed };
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  newlySuspended.forEach((problemId) => markProgressDirty(problemId, "休止判定を保存"));
+  changedIds.forEach((problemId) => markProgressDirty(problemId, "休止判定を保存"));
   if (notify) setTimeout(() => {
-    alert(`${newlySuspended.length}問が「正解後の不正解」8回に達していたため休止になりました。\n問題一覧から休止を解除できます。`);
+    if (newlySuspended.length) alert(`${newlySuspended.length}問が「正解後の不正解」${threshold}回に達していたため休止になりました。\n問題一覧から休止を解除できます。`);
   }, 0);
-  return newlySuspended;
+  return { newlySuspended, newlyResumed };
 }
 
 function undoCurrentAnswer() {
@@ -586,6 +610,8 @@ function loadReviewSettings() {
     wrong_retry_days: sanitizeReviewSetting(stored.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
     wrong_then_correct_days: sanitizeReviewSetting(stored.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
     repeat_multiplier: sanitizeReviewSetting(stored.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+    suspension_wrong_transitions: sanitizeSuspensionThreshold(stored.suspension_wrong_transitions),
+    quiz_random_transform: sanitizeBooleanSetting(stored.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
   };
 }
 
@@ -595,14 +621,29 @@ function sanitizeReviewSetting(value, fallback) {
   return parsed;
 }
 
+function sanitizeSuspensionThreshold(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1000) return DEFAULT_REVIEW_SETTINGS.suspension_wrong_transitions;
+  return Math.floor(parsed);
+}
+
+function sanitizeBooleanSetting(value, fallback) {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function saveReviewSettings(settings) {
   localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify({
     first_correct_days: sanitizeReviewSetting(settings.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
     wrong_retry_days: sanitizeReviewSetting(settings.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
     wrong_then_correct_days: sanitizeReviewSetting(settings.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
     repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+    suspension_wrong_transitions: sanitizeSuspensionThreshold(settings.suspension_wrong_transitions),
+    quiz_random_transform: Boolean(settings.quiz_random_transform),
   }));
   markSettingsDirty("復習設定を保存");
+  reconcileSuspendedProblems({ notify: true });
+  if (currentView === "manage") renderAdminProblems();
+  if (currentView === "quiz") renderGenreQuizTable();
 }
 
 function renderReviewSettings() {
@@ -612,11 +653,14 @@ function renderReviewSettings() {
     "review-wrong-retry-days": settings.wrong_retry_days,
     "review-wrong-then-correct-days": settings.wrong_then_correct_days,
     "review-repeat-multiplier": settings.repeat_multiplier,
+    "review-suspension-wrong-transitions": settings.suspension_wrong_transitions,
   };
   Object.entries(bindings).forEach(([id, value]) => {
     const input = $(id);
     if (input) input.value = String(value);
   });
+  const randomTransform = $("quiz-random-transform");
+  if (randomTransform) randomTransform.checked = settings.quiz_random_transform;
 }
 
 function loadAdminCount() {
@@ -1064,7 +1108,7 @@ async function loadProblems() {
   problems.forEach((problem) => delete problem.genre_order);
   refreshGenres();
   repairReviewHistoryDueDates();
-  migrateSuspendedProblems({ notify: true });
+  reconcileSuspendedProblems({ notify: true });
 }
 
 async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
@@ -1204,6 +1248,8 @@ function bindExport() {
     "review-wrong-retry-days",
     "review-wrong-then-correct-days",
     "review-repeat-multiplier",
+    "review-suspension-wrong-transitions",
+    "quiz-random-transform",
   ].forEach((id) => {
     const input = $(id);
     if (!input) return;
@@ -1213,6 +1259,8 @@ function bindExport() {
         wrong_retry_days: $("review-wrong-retry-days").value,
         wrong_then_correct_days: $("review-wrong-then-correct-days").value,
         repeat_multiplier: $("review-repeat-multiplier").value,
+        suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
+        quiz_random_transform: $("quiz-random-transform").checked,
       });
     });
   });
@@ -1872,6 +1920,7 @@ function genreOrderFor(genre) {
 
 function renderAdminProblems() {
   const history = loadHistory();
+  const suspensionThreshold = loadReviewSettings().suspension_wrong_transitions;
   const problemById = new Map(problems.map((problem) => [problem.id, problem]));
   const problemCount = $("create-problem-count");
   if (problemCount) problemCount.textContent = `${problems.length}問`;
@@ -1928,7 +1977,7 @@ function renderAdminProblems() {
       <td>${formatDate(state?.dueAt)}</td>
       <td class="problem-status-cell">${suspended
         ? `<strong class="suspended-label">休止（${transitionCount}回）</strong><button type="button" class="resume-problem" data-id="${problem.id}">休止解除</button>`
-        : `<span>${transitionCount}/${SUSPENSION_WRONG_TRANSITIONS}</span>`}</td>
+        : `<span>${transitionCount}/${suspensionThreshold}</span>`}</td>
       <td>${source ? escapeHtml(source.hand) : "元問題"}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="8">登録済みの問題がありません。</td></tr>`;
@@ -2517,7 +2566,7 @@ async function applySaveData(data, options = {}) {
     localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || DEFAULT_ADMIN_COUNT))));
     saveGenreOrder(normalized.g || [], false);
     repairReviewHistoryDueDates();
-    migrateSuspendedProblems({ notify: true });
+    reconcileSuspendedProblems({ notify: true });
     renderReviewSettings();
     renderAdminCount();
     if (currentView === "manage") renderAdminProblems();
@@ -2600,19 +2649,21 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
     });
     localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    migrateSuspendedProblems({ notify: true });
     if (settingsRecord) {
       const safeSettings = {
         first_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
         wrong_retry_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
         wrong_then_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
         repeat_multiplier: sanitizeReviewSetting(settingsRecord.reviewSettings?.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
+        suspension_wrong_transitions: sanitizeSuspensionThreshold(settingsRecord.reviewSettings?.suspension_wrong_transitions),
+        quiz_random_transform: sanitizeBooleanSetting(settingsRecord.reviewSettings?.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
       };
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
       localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || DEFAULT_ADMIN_COUNT))));
       saveGenreOrder(settingsRecord.genreOrder, false);
     }
+    reconcileSuspendedProblems({ notify: true });
     renderReviewSettings(); renderAdminCount(); refreshGenres();
     if (currentView === "manage") renderAdminProblems();
     if (currentView === "stats") renderStats();
@@ -2808,15 +2859,58 @@ function describeBlocksClient(hand) {
   return splitBlocksClient(hand).map((block) => tilesToMpszClient(block.tiles));
 }
 
+function buildQuizProblemPresentation(problem, settings = loadReviewSettings(), random = Math.random) {
+  if (!settings.quiz_random_transform) return problem;
+  const suitIndex = Math.min(SUIT_PERMUTATIONS.length - 1, Math.floor(Math.max(0, random()) * SUIT_PERMUTATIONS.length));
+  const spec = {
+    suit_map: { ...SUIT_PERMUTATIONS[suitIndex] },
+    reverse: random() < 0.5,
+    slides: {},
+  };
+  const transformed = transformProblem(
+    problem.hand,
+    problem.answers || [problem.primary_answer],
+    problem.melds || [],
+    spec,
+    {
+      dora: tilesToMpszClient(problem.settings?.dora_indicators || []),
+      note: problem.note || "",
+      prompt_note: problem.prompt_note || "",
+    }
+  );
+  return {
+    ...problem,
+    ...transformed,
+    primary_answer: transformed.answers[0],
+    settings: {
+      ...(problem.settings || {}),
+      dora_indicators: parseMpsz(transformed.dora),
+    },
+    simulator: transformSimulatorForQuiz(problem.simulator, spec),
+    quiz_transform: spec,
+  };
+}
+
+function transformSimulatorForQuiz(simulator, spec) {
+  if (!simulator || typeof simulator !== "object") return simulator;
+  const transformTile = (tile) => typeof tile === "string" ? transformTileWithDelta(tile, spec, 0) : tile;
+  return {
+    ...simulator,
+    best_discards: (simulator.best_discards || []).map(transformTile),
+    rows: (simulator.rows || []).map((row) => ({
+      ...row,
+      tile: transformTile(row.tile),
+      necessary_tiles: (row.necessary_tiles || []).map((item) => ({ ...item, tile: transformTile(item.tile) })),
+    })),
+  };
+}
+
 function enumerateTransformSpecs(hand, extraTiles = []) {
   const blocks = splitBlocksClient(hand, extraTiles);
-  const suitMaps = [
-    { m: "m", p: "p", s: "s" },
-    { m: "m", p: "s", s: "p" },
-    { m: "p", p: "m", s: "s" },
-    { m: "p", p: "s", s: "m" },
-    { m: "s", p: "m", s: "p" },
-    { m: "s", p: "p", s: "m" },
+  const reverseSuitSets = [
+    [],
+    ["m"], ["p"], ["s"],
+    ["m", "p"], ["m", "s"], ["p", "s"],
   ];
   const specs = [];
   const seen = new Set();
@@ -2824,19 +2918,21 @@ function enumerateTransformSpecs(hand, extraTiles = []) {
   const slideState = {};
   const emitSlides = (index) => {
     if (index >= movableBlocks.length) {
-      suitMaps.forEach((suitMap) => {
-        [false, true].forEach((reverse) => {
-          const key = JSON.stringify([suitMap.m, suitMap.p, suitMap.s, reverse, slideState]);
-          if (seen.has(key)) return;
-          seen.add(key);
-          const spec = { suit_map: { ...suitMap }, reverse, slides: { ...slideState } };
-          if (!isBlockStructurePreserved(hand, spec)) return;
-          const degree = ["m", "p", "s"].filter((suit) => suitMap[suit] !== suit).length
-            + Number(reverse)
-            + Object.values(slideState).filter((delta) => delta !== 0).length;
-          if (!degree) return;
-          specs.push({ ...spec, degree });
-        });
+      reverseSuitSets.forEach((reverseSuits) => {
+        const key = JSON.stringify([reverseSuits, slideState]);
+        if (seen.has(key)) return;
+        seen.add(key);
+        const spec = {
+          suit_map: { ...SUIT_PERMUTATIONS[0] },
+          reverse: false,
+          reverse_suits: [...reverseSuits],
+          slides: { ...slideState },
+        };
+        if (!isBlockStructurePreserved(hand, spec)) return;
+        const degree = reverseSuits.length
+          + Object.values(slideState).filter((delta) => delta !== 0).length;
+        if (!degree) return;
+        specs.push({ ...spec, degree });
       });
       return;
     }
@@ -2937,7 +3033,8 @@ function transformTileWithDelta(tile, spec, delta) {
   let suit = tile[1];
   if (suit !== "z") {
     rank += delta;
-    if (spec.reverse) rank = 10 - rank;
+    const reverse = Array.isArray(spec.reverse_suits) ? spec.reverse_suits.includes(suit) : Boolean(spec.reverse);
+    if (reverse) rank = 10 - rank;
     suit = spec.suit_map[suit];
   }
   return `${wasRed && rank === 5 ? 0 : rank}${suit}`;
