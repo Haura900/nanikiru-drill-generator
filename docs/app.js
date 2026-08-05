@@ -27,6 +27,7 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   repeat_multiplier: 3,
   suspension_wrong_transitions: 8,
   quiz_random_transform: true,
+  daily_new_problem_limit: 10,
 });
 let problems = [];
 let currentProblem = null;
@@ -216,7 +217,8 @@ function renderGenreQuizTable() {
     button.addEventListener("click", () => startGenreQuestion(button.dataset.genre));
   });
   const due = dueReviewProblems(history);
-  $("review-due-count").textContent = `復習 ${due.length}問`;
+  const reviewCounts = reviewQuestionCounts(history);
+  $("review-due-count").textContent = `復習 ${due.length}問 + 新規 ${reviewCounts.newProblems}問`;
   $("review-question").disabled = due.length === 0;
   $("random-question").disabled = totalUnseen === 0;
 }
@@ -248,8 +250,54 @@ function dueReviewProblems(history = loadHistory()) {
     .sort((a, b) => history[a.id].dueAt - history[b.id].dueAt);
 }
 
+function localDayRange(now = Date.now()) {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start: start.getTime(), end: end.getTime() };
+}
+
+function newProblemsAnsweredToday(history = loadHistory(), now = Date.now()) {
+  const { start, end } = localDayRange(now);
+  return Object.values(history).reduce((count, state) => {
+    const firstAttemptAt = Number(state?.attempts?.[0]?.at || 0);
+    return count + Number(firstAttemptAt >= start && firstAttemptAt < end);
+  }, 0);
+}
+
+function remainingDailyNewProblemCount(history = loadHistory(), now = Date.now()) {
+  const limit = loadReviewSettings().daily_new_problem_limit;
+  return Math.max(0, limit - newProblemsAnsweredToday(history, now));
+}
+
+function reviewQuestionCounts(history = loadHistory(), now = Date.now()) {
+  const due = dueReviewProblems(history).length;
+  const newProblems = Math.min(unseenProblems(history).length, remainingDailyNewProblemCount(history, now));
+  return { due, newProblems, total: due + newProblems };
+}
+
+function sampleRandomProblems(values, count, random = Math.random) {
+  const candidates = [...values];
+  for (let index = candidates.length - 1; index > 0; index--) {
+    const other = Math.min(index, Math.floor(Math.max(0, random()) * (index + 1)));
+    [candidates[index], candidates[other]] = [candidates[other], candidates[index]];
+  }
+  return candidates.slice(0, Math.max(0, count));
+}
+
+function reviewQuestionPool(history = loadHistory(), random = Math.random, now = Date.now()) {
+  const due = dueReviewProblems(history).slice(0, 8);
+  const newProblems = sampleRandomProblems(
+    unseenProblems(history),
+    remainingDailyNewProblemCount(history, now),
+    random
+  );
+  return [...due, ...newProblems];
+}
+
 function startReviewQuestion() {
-  const pool = dueReviewProblems().slice(0, 8);
+  const pool = reviewQuestionPool();
   currentQuizContext = { mode: "review" };
   showQuestionFromPool(pool, true);
 }
@@ -269,7 +317,7 @@ function showQuestionFromPool(pool, reviewMode) {
     $("quiz-empty").textContent = currentQuizContext?.mode === "random"
       ? "未回答の問題がありません。"
       : reviewMode
-        ? "現在、復習期限を迎えた問題はありません。"
+        ? "現在、復習問題・本日の新規問題はありません。"
         : "このジャンルには未回答の問題がありません。";
     return;
   }
@@ -342,7 +390,7 @@ function renderQuestionStatus(problem, state) {
     return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
   }
   if (currentQuizContext?.mode !== "review") return escapeHtml(attemptText);
-  const remaining = Math.max(0, dueReviewProblems().filter((item) => item.id !== problem.id).length);
+  const remaining = Math.max(0, reviewQuestionPool().filter((item) => item.id !== problem.id).length);
   return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
 }
 
@@ -612,6 +660,7 @@ function loadReviewSettings() {
     repeat_multiplier: sanitizeReviewSetting(stored.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
     suspension_wrong_transitions: sanitizeSuspensionThreshold(stored.suspension_wrong_transitions),
     quiz_random_transform: sanitizeBooleanSetting(stored.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
+    daily_new_problem_limit: sanitizeDailyNewProblemLimit(stored.daily_new_problem_limit),
   };
 }
 
@@ -627,6 +676,12 @@ function sanitizeSuspensionThreshold(value) {
   return Math.floor(parsed);
 }
 
+function sanitizeDailyNewProblemLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1000) return DEFAULT_REVIEW_SETTINGS.daily_new_problem_limit;
+  return Math.floor(parsed);
+}
+
 function sanitizeBooleanSetting(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -639,6 +694,7 @@ function saveReviewSettings(settings) {
     repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
     suspension_wrong_transitions: sanitizeSuspensionThreshold(settings.suspension_wrong_transitions),
     quiz_random_transform: Boolean(settings.quiz_random_transform),
+    daily_new_problem_limit: sanitizeDailyNewProblemLimit(settings.daily_new_problem_limit),
   }));
   markSettingsDirty("復習設定を保存");
   reconcileSuspendedProblems({ notify: true });
@@ -654,6 +710,7 @@ function renderReviewSettings() {
     "review-wrong-then-correct-days": settings.wrong_then_correct_days,
     "review-repeat-multiplier": settings.repeat_multiplier,
     "review-suspension-wrong-transitions": settings.suspension_wrong_transitions,
+    "review-daily-new-problem-limit": settings.daily_new_problem_limit,
   };
   Object.entries(bindings).forEach(([id, value]) => {
     const input = $(id);
@@ -1249,6 +1306,7 @@ function bindExport() {
     "review-wrong-then-correct-days",
     "review-repeat-multiplier",
     "review-suspension-wrong-transitions",
+    "review-daily-new-problem-limit",
     "quiz-random-transform",
   ].forEach((id) => {
     const input = $(id);
@@ -1260,6 +1318,7 @@ function bindExport() {
         wrong_then_correct_days: $("review-wrong-then-correct-days").value,
         repeat_multiplier: $("review-repeat-multiplier").value,
         suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
+        daily_new_problem_limit: $("review-daily-new-problem-limit").value,
         quiz_random_transform: $("quiz-random-transform").checked,
       });
     });
@@ -2657,6 +2716,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
         repeat_multiplier: sanitizeReviewSetting(settingsRecord.reviewSettings?.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
         suspension_wrong_transitions: sanitizeSuspensionThreshold(settingsRecord.reviewSettings?.suspension_wrong_transitions),
         quiz_random_transform: sanitizeBooleanSetting(settingsRecord.reviewSettings?.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
+        daily_new_problem_limit: sanitizeDailyNewProblemLimit(settingsRecord.reviewSettings?.daily_new_problem_limit),
       };
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
