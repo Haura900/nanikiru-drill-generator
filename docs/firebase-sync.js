@@ -10,7 +10,7 @@ import {
   CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS, MAX_SETTINGS_PAYLOAD_CHARS,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
-} from "./cloud-sync-core.js?v=20260805-1";
+} from "./cloud-sync-core.js?v=20260805-2";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
 const BOUND_UID_KEY = "nanikiru-bound-uid-v1";

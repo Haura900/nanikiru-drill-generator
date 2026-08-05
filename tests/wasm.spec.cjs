@@ -327,19 +327,23 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
   expect(result.presentation.simulator.rows[0].necessary_tiles[0].tile).toBe("8s");
 });
 
-test("data settings persist the suspension threshold and quiz random transform toggle", async ({ page }) => {
+test("data settings persist the suspension threshold, daily new limit and quiz random transform toggle", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
+  await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("10");
   await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
   await page.locator("#review-suspension-wrong-transitions").fill("12");
+  await page.locator("#review-daily-new-problem-limit").fill("15");
   await page.locator("#quiz-random-transform").check();
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")));
   expect(stored.suspension_wrong_transitions).toBe(12);
+  expect(stored.daily_new_problem_limit).toBe(15);
   expect(stored.quiz_random_transform).toBe(true);
   await page.reload();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
+  await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("15");
   await expect(page.locator("#quiz-random-transform")).toBeChecked();
 });
 
@@ -372,9 +376,59 @@ test("legacy cloud settings load with defaults for newly added settings", async 
     repeat_multiplier: 5,
     suspension_wrong_transitions: 8,
     quiz_random_transform: true,
+    daily_new_problem_limit: 10,
   });
   expect(stored.adminCount).toBe("9");
   expect(stored.genreOrder).toEqual(["旧設定"]);
+});
+
+test("review mode adds only the remaining daily quota of random new problems", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const now = Date.now();
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const today = start.getTime() + 60 * 60 * 1000;
+    const yesterday = start.getTime() - 60 * 60 * 1000;
+    const makeProblem = (id) => ({
+      id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "daily-new",
+      created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    });
+    problems = [
+      makeProblem("due-a"), makeProblem("due-b"),
+      ...Array.from({ length: 4 }, (_, index) => makeProblem(`today-${index}`)),
+      makeProblem("seen-yesterday"),
+      ...Array.from({ length: 12 }, (_, index) => makeProblem(`unseen-${index}`)),
+    ];
+    const history = {
+      "due-a": { attempts: [{ at: yesterday, correct: true }], dueAt: now - 2000 },
+      "due-b": { attempts: [{ at: yesterday, correct: true }], dueAt: now - 1000 },
+      "seen-yesterday": { attempts: [{ at: yesterday, correct: true }], dueAt: now + DAY },
+    };
+    for (let index = 0; index < 4; index++) {
+      history[`today-${index}`] = { attempts: [{ at: today + index, correct: true }], dueAt: now + DAY };
+    }
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify(history));
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 10,
+      quiz_random_transform: false,
+    }));
+    const firstPool = reviewQuestionPool(history, () => 0, now);
+    history["unseen-0"] = { attempts: [{ at: today + 100, correct: true }], dueAt: now + DAY };
+    const secondPool = reviewQuestionPool(history, () => 0, now);
+    return {
+      answeredToday: newProblemsAnsweredToday(JSON.parse(localStorage.getItem("nanikiru-learning-v1")), now),
+      firstCounts: reviewQuestionCounts(JSON.parse(localStorage.getItem("nanikiru-learning-v1")), now),
+      firstPoolIds: firstPool.map((problem) => problem.id),
+      secondPoolIds: secondPool.map((problem) => problem.id),
+    };
+  });
+  expect(result.answeredToday).toBe(4);
+  expect(result.firstCounts).toEqual({ due: 2, newProblems: 6, total: 8 });
+  expect(result.firstPoolIds.slice(0, 2)).toEqual(["due-a", "due-b"]);
+  expect(result.firstPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(6);
+  expect(result.secondPoolIds.slice(0, 2)).toEqual(["due-a", "due-b"]);
+  expect(result.secondPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(5);
 });
 
 test("quiz accepts the transformed answer tile", async ({ page }) => {
