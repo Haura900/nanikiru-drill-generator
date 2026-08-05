@@ -413,18 +413,25 @@ test("review mode adds only the remaining daily quota of random new problems", a
       daily_new_problem_limit: 10,
       quiz_random_transform: false,
     }));
+    currentQuizContext = { mode: "review" };
+    const dueStatus = renderQuestionStatus(problems.find((problem) => problem.id === "due-a"), history["due-a"]);
+    const newStatus = renderQuestionStatus(problems.find((problem) => problem.id === "unseen-0"), null);
     const firstPool = reviewQuestionPool(history, () => 0, now);
     history["unseen-0"] = { attempts: [{ at: today + 100, correct: true }], dueAt: now + DAY };
     const secondPool = reviewQuestionPool(history, () => 0, now);
     return {
       answeredToday: newProblemsAnsweredToday(JSON.parse(localStorage.getItem("nanikiru-learning-v1")), now),
       firstCounts: reviewQuestionCounts(JSON.parse(localStorage.getItem("nanikiru-learning-v1")), now),
+      dueStatus,
+      newStatus,
       firstPoolIds: firstPool.map((problem) => problem.id),
       secondPoolIds: secondPool.map((problem) => problem.id),
     };
   });
   expect(result.answeredToday).toBe(4);
   expect(result.firstCounts).toEqual({ due: 2, newProblems: 6, total: 8 });
+  expect(result.dueStatus).toContain("残り 7問（復習 1問・新規 6問）");
+  expect(result.newStatus).toContain("残り 7問（復習 2問・新規 5問）");
   expect(result.firstPoolIds.slice(0, 2)).toEqual(["due-a", "due-b"]);
   expect(result.firstPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(6);
   expect(result.secondPoolIds.slice(0, 2)).toEqual(["due-a", "due-b"]);
