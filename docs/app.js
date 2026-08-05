@@ -277,6 +277,14 @@ function reviewQuestionCounts(history = loadHistory(), now = Date.now()) {
   return { due, newProblems, total: due + newProblems };
 }
 
+function reviewRemainingQuestionCounts(problem, state, history = loadHistory(), now = Date.now()) {
+  const counts = reviewQuestionCounts(history, now);
+  const currentIsNew = !state?.attempts?.length;
+  const due = Math.max(0, counts.due - Number(!currentIsNew));
+  const newProblems = Math.max(0, counts.newProblems - Number(currentIsNew));
+  return { due, newProblems, total: due + newProblems };
+}
+
 function sampleRandomProblems(values, count, random = Math.random) {
   const candidates = [...values];
   for (let index = candidates.length - 1; index > 0; index--) {
@@ -390,8 +398,8 @@ function renderQuestionStatus(problem, state) {
     return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
   }
   if (currentQuizContext?.mode !== "review") return escapeHtml(attemptText);
-  const remaining = Math.max(0, reviewQuestionPool().filter((item) => item.id !== problem.id).length);
-  return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining}問</span>`;
+  const remaining = reviewRemainingQuestionCounts(problem, state);
+  return `${escapeHtml(attemptText)} <span class="question-remaining">/ 残り ${remaining.total}問（復習 ${remaining.due}問・新規 ${remaining.newProblems}問）</span>`;
 }
 
 function answerQuestion(tile, clickedButton) {
