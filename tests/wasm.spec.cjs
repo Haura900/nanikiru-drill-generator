@@ -327,23 +327,27 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
   expect(result.presentation.simulator.rows[0].necessary_tiles[0].tile).toBe("8s");
 });
 
-test("data settings persist the suspension threshold, daily new limit and quiz random transform toggle", async ({ page }) => {
+test("data settings persist the suspension threshold, daily new limit, day boundary and quiz transform", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("10");
+  await expect(page.locator("#review-day-boundary-time")).toHaveValue("00:00");
   await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
   await page.locator("#review-suspension-wrong-transitions").fill("12");
   await page.locator("#review-daily-new-problem-limit").fill("15");
+  await page.locator("#review-day-boundary-time").fill("04:30");
   await page.locator("#quiz-random-transform").check();
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")));
   expect(stored.suspension_wrong_transitions).toBe(12);
   expect(stored.daily_new_problem_limit).toBe(15);
+  expect(stored.day_boundary_minutes).toBe(270);
   expect(stored.quiz_random_transform).toBe(true);
   await page.reload();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("15");
+  await expect(page.locator("#review-day-boundary-time")).toHaveValue("04:30");
   await expect(page.locator("#quiz-random-transform")).toBeChecked();
 });
 
@@ -377,9 +381,96 @@ test("legacy cloud settings load with defaults for newly added settings", async 
     suspension_wrong_transitions: 8,
     quiz_random_transform: true,
     daily_new_problem_limit: 10,
+    day_boundary_minutes: 0,
   });
   expect(stored.adminCount).toBe("9");
   expect(stored.genreOrder).toEqual(["旧設定"]);
+});
+
+test("configured JST day boundary controls daily grouping and the new-problem quota", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      day_boundary_minutes: 4 * 60,
+      daily_new_problem_limit: 10,
+      quiz_random_transform: false,
+    }));
+    const beforeBoundary = Date.UTC(2026, 7, 7, 18, 59);
+    const boundary = Date.UTC(2026, 7, 7, 19, 0);
+    const now = Date.UTC(2026, 7, 7, 19, 30);
+    const history = {
+      before: { attempts: [{ at: beforeBoundary, correct: true }], dueAt: now + DAY },
+      after: { attempts: [{ at: boundary, correct: true }], dueAt: now + DAY },
+    };
+    return {
+      beforeKey: jstDayKey(beforeBoundary),
+      boundaryKey: jstDayKey(boundary),
+      range: localDayRange(now),
+      answeredToday: newProblemsAnsweredToday(history, now),
+      dayDifference: calendarDaysDiffJst(beforeBoundary, boundary),
+    };
+  });
+  expect(result.beforeKey).toBe("2026-08-07");
+  expect(result.boundaryKey).toBe("2026-08-08");
+  expect(result.range).toEqual({
+    start: Date.UTC(2026, 7, 7, 19, 0),
+    end: Date.UTC(2026, 7, 8, 19, 0),
+  });
+  expect(result.answeredToday).toBe(1);
+  expect(result.dayDifference).toBe(1);
+});
+
+test("review due dates use logical days anchored at the configured boundary", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const settings = {
+      first_correct_days: 7,
+      wrong_retry_days: 1,
+      wrong_then_correct_days: 1,
+      repeat_multiplier: 3,
+      day_boundary_minutes: 4 * 60,
+    };
+    const night = Date.UTC(2026, 7, 8, 14, 0); // 2026-08-08 23:00 JST
+    const nextMorning = Date.UTC(2026, 7, 8, 21, 0); // 2026-08-09 06:00 JST
+    const wrongDueAt = calculateNextReviewDueAt([], false, night, settings);
+    const afterWrongDueAt = calculateNextReviewDueAt(
+      [{ at: night, correct: false }],
+      true,
+      nextMorning,
+      settings,
+    );
+
+    problems = [{ id: "legacy-boundary" }];
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify(settings));
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      "legacy-boundary": {
+        attempts: [{ at: night, correct: false }],
+        dueAt: night + DAY,
+      },
+    }));
+    repairReviewHistoryDueDates();
+    const migratedDueAt = JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["legacy-boundary"].dueAt;
+    const originalNow = Date.now;
+    Date.now = () => nextMorning;
+    const dueProblemIds = dueReviewProblems().map((problem) => problem.id);
+    Date.now = originalNow;
+    return {
+      wrongDueAt,
+      eligibleNextMorning: wrongDueAt <= nextMorning,
+      afterWrongDueAt,
+      migratedDueAt,
+      dueProblemIds,
+      nearIntegerDelay: normalizeReviewDelayDays((0.1 + 0.2) * 10),
+      fractionalDelay: normalizeReviewDelayDays(3.01),
+    };
+  });
+  expect(result.wrongDueAt).toBe(Date.UTC(2026, 7, 8, 19, 0)); // 2026-08-09 04:00 JST
+  expect(result.eligibleNextMorning).toBe(true);
+  expect(result.afterWrongDueAt).toBe(Date.UTC(2026, 7, 14, 19, 0)); // 2026-08-15 04:00 JST
+  expect(result.migratedDueAt).toBe(Date.UTC(2026, 7, 8, 19, 0));
+  expect(result.dueProblemIds).toContain("legacy-boundary");
+  expect(result.nearIntegerDelay).toBe(3);
+  expect(result.fractionalDelay).toBe(4);
 });
 
 test("review mode adds only the remaining daily quota of random new problems", async ({ page }) => {
@@ -725,8 +816,9 @@ test("problem additions are grouped by days ago with a daily average", async ({ 
 });
 
 test("the latest answer can be cancelled with its previous review schedule restored", async ({ page }) => {
-  const previousAt = Date.now() - 7 * 86400000;
-  const previousDueAt = Date.now() - 1000;
+  const nowJst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const previousDueAt = Date.UTC(nowJst.getUTCFullYear(), nowJst.getUTCMonth(), nowJst.getUTCDate()) - 9 * 60 * 60 * 1000;
+  const previousAt = previousDueAt - 7 * 86400000;
   await page.addInitScript(({ previousAt, previousDueAt }) => {
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "undo-answer", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "取消確認",
