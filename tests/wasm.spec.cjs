@@ -477,10 +477,9 @@ test("review mode adds only the remaining daily quota of random new problems", a
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => {
     const now = Date.now();
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    const today = start.getTime() + 60 * 60 * 1000;
-    const yesterday = start.getTime() - 60 * 60 * 1000;
+    const { start } = localDayRange(now);
+    const today = start + 60 * 60 * 1000;
+    const yesterday = start - 60 * 60 * 1000;
     const makeProblem = (id) => ({
       id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "daily-new",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
