@@ -28,6 +28,7 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   suspension_wrong_transitions: 8,
   quiz_random_transform: true,
   daily_new_problem_limit: 10,
+  day_boundary_minutes: 0,
 });
 let problems = [];
 let currentProblem = null;
@@ -250,12 +251,22 @@ function dueReviewProblems(history = loadHistory()) {
     .sort((a, b) => history[a.id].dueAt - history[b.id].dueAt);
 }
 
-function localDayRange(now = Date.now()) {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start: start.getTime(), end: end.getTime() };
+function localDayRange(now = Date.now(), boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
+  const [year, month, day] = jstDayKey(now, boundaryMinutes).split("-").map(Number);
+  const start = Date.UTC(year, month - 1, day) - 9 * 60 * 60 * 1000 + boundaryMinutes * 60 * 1000;
+  return { start, end: start + DAY };
+}
+
+function normalizeReviewDelayDays(value) {
+  const parsed = Math.max(0, Number(value) || 0);
+  const nearestInteger = Math.round(parsed);
+  const tolerance = Number.EPSILON * Math.max(1, parsed) * 16;
+  return Math.abs(parsed - nearestInteger) <= tolerance ? nearestInteger : Math.ceil(parsed);
+}
+
+function reviewDueAt(answeredAt, delayDays, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
+  const { start } = localDayRange(answeredAt, boundaryMinutes);
+  return start + normalizeReviewDelayDays(delayDays) * DAY;
 }
 
 function newProblemsAnsweredToday(history = loadHistory(), now = Date.now()) {
@@ -516,21 +527,7 @@ function recordAttempt(problem, correct) {
   const nextWrongTransitionCount = previousWrongTransitionCount + (countsAsWrongTransition ? 1 : 0);
   const suspensionThreshold = reviewSettings.suspension_wrong_transitions;
   const suspendedNow = !isProblemSuspended(state) && nextWrongTransitionCount >= suspensionThreshold;
-  let dueAt;
-  if (!correct) {
-    dueAt = now + reviewSettings.wrong_retry_days * DAY;
-  } else if (!previous) {
-    dueAt = now + reviewSettings.first_correct_days * DAY;
-  } else if (!previous.correct) {
-    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, now));
-    const delayDays = elapsedDays > 0
-      ? (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier
-      : reviewSettings.wrong_then_correct_days;
-    dueAt = now + delayDays * DAY;
-  } else {
-    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, now));
-    dueAt = now + (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier * DAY;
-  }
+  const dueAt = calculateNextReviewDueAt(state.attempts, correct, now, reviewSettings);
   state.attempts.push({ at: now, correct, genre: problem.genre || "未分類" });
   state.dueAt = dueAt;
   state.wrongTransitionCount = nextWrongTransitionCount;
@@ -553,6 +550,25 @@ function recordAttempt(problem, correct) {
       previousState,
     },
   };
+}
+
+function calculateNextReviewDueAt(attempts, correct, answeredAt, settings = loadReviewSettings()) {
+  const previous = attempts?.[attempts.length - 1];
+  let delayDays;
+  if (!correct) {
+    delayDays = settings.wrong_retry_days;
+  } else if (!previous) {
+    delayDays = settings.first_correct_days;
+  } else if (!previous.correct) {
+    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, answeredAt, settings.day_boundary_minutes));
+    delayDays = elapsedDays > 0
+      ? (elapsedDays + settings.wrong_then_correct_days) * settings.repeat_multiplier
+      : settings.wrong_then_correct_days;
+  } else {
+    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, answeredAt, settings.day_boundary_minutes));
+    delayDays = (elapsedDays + settings.wrong_then_correct_days) * settings.repeat_multiplier;
+  }
+  return reviewDueAt(answeredAt, delayDays, settings.day_boundary_minutes);
 }
 
 function wrongTransitionCount(state) {
@@ -633,25 +649,36 @@ function loadHistory() {
 function repairReviewHistoryDueDates() {
   const history = loadHistory();
   const reviewSettings = loadReviewSettings();
-  const changedIds = [];
+  const changedIds = new Set();
   activeHistoryEntries(history).forEach(([problemId, state]) => {
     const attempts = state?.attempts || [];
-    if (attempts.length < 2) return;
     const last = attempts[attempts.length - 1];
-    const previous = attempts[attempts.length - 2];
-    if (!last.correct || previous.correct) return;
-    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, last.at));
-    if (elapsedDays <= 0) return;
-    const currentDelayDays = (Number(state.dueAt || 0) - last.at) / DAY;
-    if (Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) > 0.01) return;
-    const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
-    state.dueAt = last.at + fixedDelayDays * DAY;
-    changedIds.push(problemId);
+    if (!last) return;
+    let nextDueAt = Number(state.dueAt || 0);
+
+    if (attempts.length >= 2) {
+      const previous = attempts[attempts.length - 2];
+      const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, last.at, reviewSettings.day_boundary_minutes));
+      const currentDelayDays = (nextDueAt - last.at) / DAY;
+      if (last.correct && !previous.correct && elapsedDays > 0
+        && Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) <= 0.01) {
+        const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
+        nextDueAt = reviewDueAt(last.at, fixedDelayDays, reviewSettings.day_boundary_minutes);
+      }
+    }
+
+    const preservedDelayDays = normalizeReviewDelayDays((nextDueAt - last.at) / DAY);
+    nextDueAt = reviewDueAt(last.at, preservedDelayDays, reviewSettings.day_boundary_minutes);
+    if (Number.isFinite(nextDueAt) && nextDueAt !== Number(state.dueAt || 0)) {
+      state.dueAt = nextDueAt;
+      changedIds.add(problemId);
+    }
   });
-  if (changedIds.length) {
+  if (changedIds.size) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を修正"));
+    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を日付境界に調整"));
   }
+  return [...changedIds];
 }
 
 function loadReviewSettings() {
@@ -669,6 +696,7 @@ function loadReviewSettings() {
     suspension_wrong_transitions: sanitizeSuspensionThreshold(stored.suspension_wrong_transitions),
     quiz_random_transform: sanitizeBooleanSetting(stored.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
     daily_new_problem_limit: sanitizeDailyNewProblemLimit(stored.daily_new_problem_limit),
+    day_boundary_minutes: sanitizeDayBoundaryMinutes(stored.day_boundary_minutes),
   };
 }
 
@@ -690,6 +718,23 @@ function sanitizeDailyNewProblemLimit(value) {
   return Math.floor(parsed);
 }
 
+function sanitizeDayBoundaryMinutes(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed >= 24 * 60) return DEFAULT_REVIEW_SETTINGS.day_boundary_minutes;
+  return Math.floor(parsed);
+}
+
+function parseDayBoundaryTime(value) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return DEFAULT_REVIEW_SETTINGS.day_boundary_minutes;
+  return sanitizeDayBoundaryMinutes(Number(match[1]) * 60 + Number(match[2]));
+}
+
+function formatDayBoundaryTime(value) {
+  const minutes = sanitizeDayBoundaryMinutes(value);
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
 function sanitizeBooleanSetting(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -703,8 +748,10 @@ function saveReviewSettings(settings) {
     suspension_wrong_transitions: sanitizeSuspensionThreshold(settings.suspension_wrong_transitions),
     quiz_random_transform: Boolean(settings.quiz_random_transform),
     daily_new_problem_limit: sanitizeDailyNewProblemLimit(settings.daily_new_problem_limit),
+    day_boundary_minutes: sanitizeDayBoundaryMinutes(settings.day_boundary_minutes),
   }));
   markSettingsDirty("復習設定を保存");
+  repairReviewHistoryDueDates();
   reconcileSuspendedProblems({ notify: true });
   if (currentView === "manage") renderAdminProblems();
   if (currentView === "quiz") renderGenreQuizTable();
@@ -719,6 +766,7 @@ function renderReviewSettings() {
     "review-repeat-multiplier": settings.repeat_multiplier,
     "review-suspension-wrong-transitions": settings.suspension_wrong_transitions,
     "review-daily-new-problem-limit": settings.daily_new_problem_limit,
+    "review-day-boundary-time": formatDayBoundaryTime(settings.day_boundary_minutes),
   };
   Object.entries(bindings).forEach(([id, value]) => {
     const input = $(id);
@@ -805,10 +853,11 @@ function buildFirstAttemptsByProblemDay(history) {
   attempts.sort((a, b) => a.at - b.at);
   const firstAttempts = [];
   const seen = new Set();
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   attempts.forEach((attempt) => {
     const problemAttempts = history[attempt.problemId]?.attempts || [];
     if (!problemAttempts.length || problemAttempts[0].at === attempt.at) return;
-    const key = `${attempt.problemId}:${jstDayKey(attempt.at)}`;
+    const key = `${attempt.problemId}:${jstDayKey(attempt.at, boundaryMinutes)}`;
     if (seen.has(key)) return;
     seen.add(key);
     firstAttempts.push(attempt);
@@ -885,8 +934,9 @@ function drawGenreChart(attempts) {
 
 function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
   const daily = {};
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   attempts.forEach((attempt) => {
-    const date = jstDayKey(attempt.at);
+    const date = jstDayKey(attempt.at, boundaryMinutes);
     daily[date] ||= { total: 0, correct: 0 };
     daily[date].total++;
     if (attempt.correct) daily[date].correct++;
@@ -897,7 +947,7 @@ function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
   }));
   const firstDaily = {};
   firstDailyAttempts.forEach((attempt) => {
-    const date = jstDayKey(attempt.at);
+    const date = jstDayKey(attempt.at, boundaryMinutes);
     firstDaily[date] ||= { total: 0, correct: 0 };
     firstDaily[date].total++;
     if (attempt.correct) firstDaily[date].correct++;
@@ -908,7 +958,7 @@ function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
   }));
   const firstProblemDaily = {};
   firstProblemAttempts.forEach((attempt) => {
-    const date = jstDayKey(attempt.at);
+    const date = jstDayKey(attempt.at, boundaryMinutes);
     firstProblemDaily[date] ||= { total: 0, correct: 0 };
     firstProblemDaily[date].total++;
     if (attempt.correct) firstProblemDaily[date].correct++;
@@ -930,9 +980,10 @@ function drawHardSolveChart(history) {
 
 function buildSolveActivityPoints(history) {
   const daily = {};
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   activeHistoryEntries(history).forEach(([, state]) => {
     (state.attempts || []).forEach((attempt) => {
-      const date = jstDayKey(attempt.at);
+      const date = jstDayKey(attempt.at, boundaryMinutes);
       daily[date] ||= { total: 0 };
       daily[date].total++;
     });
@@ -955,11 +1006,12 @@ function drawProblemAdditionChart() {
 function buildProblemAdditionStats(items, now = Date.now()) {
   const counts = new Map();
   const createdTimes = [];
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   (items || []).forEach((problem) => {
     const createdAt = Date.parse(problem?.created_at || "");
     if (!Number.isFinite(createdAt)) return;
     createdTimes.push(createdAt);
-    const daysAgo = Math.max(0, calendarDaysDiffJst(createdAt, now));
+    const daysAgo = Math.max(0, calendarDaysDiffJst(createdAt, now, boundaryMinutes));
     const key = daysAgo >= 31 ? "31日以上前" : `${daysAgo}日前`;
     counts.set(key, (counts.get(key) || 0) + 1);
   });
@@ -973,7 +1025,7 @@ function buildProblemAdditionStats(items, now = Date.now()) {
   const firstCreatedAt = total ? Math.min(...createdTimes) : null;
   const elapsedDays = firstCreatedAt === null
     ? 0
-    : Math.max(1, calendarDaysDiffJst(firstCreatedAt, now) + 1);
+    : Math.max(1, calendarDaysDiffJst(firstCreatedAt, now, boundaryMinutes) + 1);
   return {
     buckets,
     total,
@@ -995,11 +1047,12 @@ function drawReviewIntervalChart(history) {
 function buildReviewScheduleBuckets(history) {
   const now = Date.now();
   const counts = new Map();
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   activeHistoryEntries(history).forEach(([, state]) => {
     if (!state?.attempts?.length || isProblemSuspended(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
-    const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
+    const days = Math.max(0, calendarDaysDiffJst(now, dueAt, boundaryMinutes));
     const key = days >= 31 ? "31日以上" : `${days}日後`;
     counts.set(key, (counts.get(key) || 0) + 1);
   });
@@ -1014,6 +1067,7 @@ function buildReviewScheduleBuckets(history) {
 
 function buildReviewIntervalBuckets(history) {
   const now = Date.now();
+  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
   const buckets = [
     { label: "今日", min: 0, max: 0, value: 0 },
     { label: "1日", min: 1, max: 1, value: 0 },
@@ -1027,7 +1081,7 @@ function buildReviewIntervalBuckets(history) {
     if (!state?.attempts?.length || isProblemSuspended(state)) return;
     const dueAt = Number(state.dueAt || 0);
     if (!dueAt) return;
-    const days = Math.max(0, calendarDaysDiffJst(now, dueAt));
+    const days = Math.max(0, calendarDaysDiffJst(now, dueAt, boundaryMinutes));
     const bucket = buckets.find((item) => days >= item.min && days <= item.max);
     if (bucket) bucket.value++;
   });
@@ -1039,32 +1093,32 @@ function activeHistoryEntries(history) {
   return Object.entries(history || {}).filter(([problemId]) => problemIds.has(problemId));
 }
 
-function calendarDaysDiffJst(fromMs, toMs) {
-  const fromDate = jstDateUtcMs(fromMs);
-  const toDate = jstDateUtcMs(toMs);
+function calendarDaysDiffJst(fromMs, toMs, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
+  const fromDate = jstDateUtcMs(fromMs, boundaryMinutes);
+  const toDate = jstDateUtcMs(toMs, boundaryMinutes);
   return Math.round((toDate - fromDate) / DAY);
 }
 
-function jstDateUtcMs(ms) {
+function jstDateUtcMs(ms, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date(ms));
+  }).formatToParts(new Date(Number(ms) - sanitizeDayBoundaryMinutes(boundaryMinutes) * 60 * 1000));
   const year = Number(parts.find((part) => part.type === "year")?.value || 0);
   const month = Number(parts.find((part) => part.type === "month")?.value || 1);
   const day = Number(parts.find((part) => part.type === "day")?.value || 1);
   return Date.UTC(year, month - 1, day);
 }
 
-function jstDayKey(ms) {
+function jstDayKey(ms, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date(ms));
+  }).formatToParts(new Date(Number(ms) - sanitizeDayBoundaryMinutes(boundaryMinutes) * 60 * 1000));
   const year = parts.find((part) => part.type === "year")?.value || "0000";
   const month = parts.find((part) => part.type === "month")?.value || "00";
   const day = parts.find((part) => part.type === "day")?.value || "00";
@@ -1315,6 +1369,7 @@ function bindExport() {
     "review-repeat-multiplier",
     "review-suspension-wrong-transitions",
     "review-daily-new-problem-limit",
+    "review-day-boundary-time",
     "quiz-random-transform",
   ].forEach((id) => {
     const input = $(id);
@@ -1327,6 +1382,7 @@ function bindExport() {
         repeat_multiplier: $("review-repeat-multiplier").value,
         suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
         daily_new_problem_limit: $("review-daily-new-problem-limit").value,
+        day_boundary_minutes: parseDayBoundaryTime($("review-day-boundary-time").value),
         quiz_random_transform: $("quiz-random-transform").checked,
       });
     });
@@ -1357,16 +1413,7 @@ function openProblemInManager(problemId) {
 }
 
 function todayKeyJst() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const year = parts.find((part) => part.type === "year")?.value || "0000";
-  const month = parts.find((part) => part.type === "month")?.value || "00";
-  const day = parts.find((part) => part.type === "day")?.value || "00";
-  return `${year}-${month}-${day}`;
+  return jstDayKey(Date.now());
 }
 
 function maybeShowBackupPrompt() {
@@ -2725,12 +2772,14 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
         suspension_wrong_transitions: sanitizeSuspensionThreshold(settingsRecord.reviewSettings?.suspension_wrong_transitions),
         quiz_random_transform: sanitizeBooleanSetting(settingsRecord.reviewSettings?.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
         daily_new_problem_limit: sanitizeDailyNewProblemLimit(settingsRecord.reviewSettings?.daily_new_problem_limit),
+        day_boundary_minutes: sanitizeDayBoundaryMinutes(settingsRecord.reviewSettings?.day_boundary_minutes),
       };
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
       localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || DEFAULT_ADMIN_COUNT))));
       saveGenreOrder(settingsRecord.genreOrder, false);
     }
+    repairReviewHistoryDueDates();
     reconcileSuspendedProblems({ notify: true });
     renderReviewSettings(); renderAdminCount(); refreshGenres();
     if (currentView === "manage") renderAdminProblems();

@@ -274,7 +274,7 @@
 
         <div class="review-settings">
           <h3>復習・出題設定</h3>
-          <p class="description">復習の出題間隔、問題を休止する回数、出題時のランダム加工を調整します。</p>
+          <p class="description">復習の出題間隔、一日の境界、問題を休止する回数、出題時のランダム加工を調整します。</p>
           <div class="review-settings-grid">
             <label>初見正解の間隔（日）
               <input id="review-first-correct-days" type="number" min="0" step="1">
@@ -294,7 +294,11 @@
             <label>一日の新規問題自動出題数
               <input id="review-daily-new-problem-limit" type="number" min="0" max="1000" step="1">
             </label>
+            <label>日付の切り替え時刻（日本時間）
+              <input id="review-day-boundary-time" type="time" step="60">
+            </label>
           </div>
+          <small>復習の「1日後」は回答から24時間後ではなく、次の日付切り替え時刻です。すべての回答をその日の切り替え時刻に解いたものとして間隔を計算します。</small>
           <label class="inline-option quiz-transform-setting">
             <input id="quiz-random-transform" type="checkbox">
             出題ごとにマンズ・ピンズ・ソーズをシャッフルし、数牌全体の上下反転をランダム適用する
@@ -390,8 +394,8 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260805-3"></script>
-  <script type="module" src="firebase-sync.js?v=20260805-3"></script>
-  <script src="app.js?v=20260805-3"></script>
+  <script src="version.js?v=20260809-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260809-1"></script>
+  <script src="app.js?v=20260809-1"></script>
 </body>
 </html>
