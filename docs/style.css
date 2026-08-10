@@ -196,6 +196,35 @@ button.danger { color: var(--red); }
 .stat-row strong { font-size: 18px; color: var(--green); text-align: right; }
 .stat-row small { color: var(--muted); text-align: right; }
 .report-chart { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; margin: 10px 0 32px; background: #fffdf8; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.net-mature-report { margin: 28px 0 34px; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: #faf8f3; }
+.net-mature-heading { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
+.net-mature-heading h3 { margin-bottom: 5px; font-size: 24px; }
+.period-switch { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
+.period-switch label { display: block; color: var(--ink); cursor: pointer; }
+.period-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.period-switch span { display: block; padding: 8px 15px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-weight: 700; transition: background .15s, color .15s, border-color .15s; }
+.period-switch input:checked + span { border-color: var(--green-bright); background: var(--green-bright); color: white; }
+.period-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgba(35,116,90,.18); }
+.net-mature-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin: 22px 0 16px; }
+.net-mature-summary > div { display: grid; gap: 5px; }
+.net-mature-summary small { color: var(--muted); }
+.net-mature-summary strong { font-size: clamp(26px, 4vw, 38px); font-variant-numeric: tabular-nums; }
+.positive { color: var(--green-bright) !important; }
+.negative { color: var(--red) !important; }
+.net-mature-legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px 20px; margin: 6px 0 4px; font-size: 13px; }
+.net-mature-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.net-mature-legend i { display: inline-block; width: 15px; height: 9px; border-radius: 3px; }
+.net-mature-legend .net-positive { background: #3ba66b; }
+.net-mature-legend .net-negative { background: #d05a62; }
+.net-mature-legend .net-cumulative { height: 3px; border-radius: 2px; background: #5f84ff; }
+.net-mature-chart { margin-bottom: 12px; }
+.net-mature-values summary { color: var(--muted); cursor: pointer; }
+.net-mature-table-wrap { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.net-mature-table-wrap table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.net-mature-table-wrap th, .net-mature-table-wrap td { padding: 9px 12px; border-bottom: 1px solid #eee9df; text-align: right; }
+.net-mature-table-wrap th:first-child, .net-mature-table-wrap td:first-child { text-align: left; }
+.net-mature-table-wrap tr:last-child td { border-bottom: 0; }
 .chart-heading { align-items: center; }
 .chart-note { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .genre-checkboxes { display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: end; }
@@ -360,6 +389,14 @@ code { background: #eee9de; border-radius: 5px; padding: 2px 5px; }
   .generated-summary { grid-template-columns: 1fr; }
   .stat-row { grid-template-columns: 1fr auto; }
   .stat-row small { grid-column: 1 / -1; text-align: left; }
+  .net-mature-report { padding: 14px 10px; }
+  .net-mature-heading { flex-direction: column; }
+  .period-switch { width: 100%; gap: 6px; }
+  .period-switch label { flex: 1 1 calc(25% - 6px); }
+  .period-switch span { padding: 8px 5px; text-align: center; white-space: nowrap; }
+  .net-mature-summary { gap: 8px; }
+  .net-mature-summary small { font-size: 10px; }
+  .net-mature-summary strong { font-size: clamp(22px, 8vw, 32px); }
   .generated-hand, .preview-hand { justify-content: flex-start; }
   .cloud-sync-panel { padding: 14px; }
   .cloud-sync-panel .button-row, .cloud-modal-card .button-row { align-items: stretch; flex-direction: column; }

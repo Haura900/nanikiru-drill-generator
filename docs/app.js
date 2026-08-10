@@ -29,6 +29,7 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   quiz_random_transform: true,
   daily_new_problem_limit: 10,
   day_boundary_minutes: 0,
+  mature_interval_days: 28,
 });
 let problems = [];
 let currentProblem = null;
@@ -61,6 +62,7 @@ const selectedManagementIds = new Set();
 let wasmActiveRequestKey = null;
 let wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
 let lastWasmMode = null;
+let netMaturePeriodDays = 31;
 
 const $ = (id) => document.getElementById(id);
 
@@ -527,8 +529,9 @@ function recordAttempt(problem, correct) {
   const nextWrongTransitionCount = previousWrongTransitionCount + (countsAsWrongTransition ? 1 : 0);
   const suspensionThreshold = reviewSettings.suspension_wrong_transitions;
   const suspendedNow = !isProblemSuspended(state) && nextWrongTransitionCount >= suspensionThreshold;
-  const dueAt = calculateNextReviewDueAt(state.attempts, correct, now, reviewSettings);
-  state.attempts.push({ at: now, correct, genre: problem.genre || "未分類" });
+  const intervalDays = calculateNextReviewDelayDays(state.attempts, correct, now, reviewSettings);
+  const dueAt = reviewDueAt(now, intervalDays, reviewSettings.day_boundary_minutes);
+  state.attempts.push({ at: now, correct, genre: problem.genre || "未分類", intervalDays });
   state.dueAt = dueAt;
   state.wrongTransitionCount = nextWrongTransitionCount;
   if (suspendedNow) {
@@ -553,22 +556,15 @@ function recordAttempt(problem, correct) {
 }
 
 function calculateNextReviewDueAt(attempts, correct, answeredAt, settings = loadReviewSettings()) {
-  const previous = attempts?.[attempts.length - 1];
-  let delayDays;
-  if (!correct) {
-    delayDays = settings.wrong_retry_days;
-  } else if (!previous) {
-    delayDays = settings.first_correct_days;
-  } else if (!previous.correct) {
-    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, answeredAt, settings.day_boundary_minutes));
-    delayDays = elapsedDays > 0
-      ? (elapsedDays + settings.wrong_then_correct_days) * settings.repeat_multiplier
-      : settings.wrong_then_correct_days;
-  } else {
-    const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, answeredAt, settings.day_boundary_minutes));
-    delayDays = (elapsedDays + settings.wrong_then_correct_days) * settings.repeat_multiplier;
-  }
-  return reviewDueAt(answeredAt, delayDays, settings.day_boundary_minutes);
+  return reviewDueAt(
+    answeredAt,
+    calculateNextReviewDelayDays(attempts, correct, answeredAt, settings),
+    settings.day_boundary_minutes,
+  );
+}
+
+function calculateNextReviewDelayDays(attempts, correct, answeredAt, settings = loadReviewSettings()) {
+  return NetMatureCore.calculateReviewDelayDays(attempts, correct, answeredAt, settings);
 }
 
 function wrongTransitionCount(state) {
@@ -697,6 +693,7 @@ function loadReviewSettings() {
     quiz_random_transform: sanitizeBooleanSetting(stored.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
     daily_new_problem_limit: sanitizeDailyNewProblemLimit(stored.daily_new_problem_limit),
     day_boundary_minutes: sanitizeDayBoundaryMinutes(stored.day_boundary_minutes),
+    mature_interval_days: sanitizeMatureIntervalDays(stored.mature_interval_days),
   };
 }
 
@@ -724,6 +721,10 @@ function sanitizeDayBoundaryMinutes(value) {
   return Math.floor(parsed);
 }
 
+function sanitizeMatureIntervalDays(value) {
+  return NetMatureCore.sanitizeMatureIntervalDays(value, DEFAULT_REVIEW_SETTINGS.mature_interval_days);
+}
+
 function parseDayBoundaryTime(value) {
   const match = /^(\d{2}):(\d{2})$/.exec(String(value || ""));
   if (!match) return DEFAULT_REVIEW_SETTINGS.day_boundary_minutes;
@@ -749,12 +750,14 @@ function saveReviewSettings(settings) {
     quiz_random_transform: Boolean(settings.quiz_random_transform),
     daily_new_problem_limit: sanitizeDailyNewProblemLimit(settings.daily_new_problem_limit),
     day_boundary_minutes: sanitizeDayBoundaryMinutes(settings.day_boundary_minutes),
+    mature_interval_days: sanitizeMatureIntervalDays(settings.mature_interval_days),
   }));
   markSettingsDirty("復習設定を保存");
   repairReviewHistoryDueDates();
   reconcileSuspendedProblems({ notify: true });
   if (currentView === "manage") renderAdminProblems();
   if (currentView === "quiz") renderGenreQuizTable();
+  if (currentView === "stats") renderStats();
 }
 
 function renderReviewSettings() {
@@ -767,6 +770,7 @@ function renderReviewSettings() {
     "review-suspension-wrong-transitions": settings.suspension_wrong_transitions,
     "review-daily-new-problem-limit": settings.daily_new_problem_limit,
     "review-day-boundary-time": formatDayBoundaryTime(settings.day_boundary_minutes),
+    "review-mature-interval-days": settings.mature_interval_days,
   };
   Object.entries(bindings).forEach(([id, value]) => {
     const input = $(id);
@@ -805,6 +809,12 @@ function bindStats() {
       renderStats();
     }
   });
+  $("net-mature-periods")?.addEventListener("change", (event) => {
+    const input = event.target.closest('input[name="net-mature-period"]');
+    if (!input) return;
+    netMaturePeriodDays = Number(input.value) || 0;
+    drawNetMatureReport(loadHistory());
+  });
 }
 
 function renderStats() {
@@ -841,6 +851,131 @@ function renderStats() {
   drawProblemAdditionChart();
   drawReviewScheduleChart(history);
   drawReviewIntervalChart(history);
+  drawNetMatureReport(history);
+}
+
+function drawNetMatureReport(history) {
+  const settings = loadReviewSettings();
+  const stats = NetMatureCore.buildNetMatureStats({
+    problems,
+    history,
+    settings,
+    periodDays: netMaturePeriodDays,
+  });
+  const periodLabel = stats.periodDays === 31
+    ? "直近1か月・日次"
+    : stats.periodDays === 90
+      ? "直近3か月・日次"
+      : stats.periodDays === 365
+        ? "直近1年・日次"
+        : "全期間・月次";
+  const registration = !stats.periodDays && stats.firstProblemDate
+    ? `・最初の問題登録 ${stats.firstProblemDate}`
+    : "";
+  $("net-mature-meta").textContent = `復習間隔 ≥ ${stats.thresholdDays}日・${periodLabel}${registration}`;
+  $("net-mature-current").textContent = stats.currentMature.toLocaleString("ja-JP");
+  const change = $("net-mature-change");
+  change.textContent = `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toLocaleString("ja-JP")}`;
+  change.classList.toggle("positive", stats.netChange > 0);
+  change.classList.toggle("negative", stats.netChange < 0);
+  $("net-mature-start").textContent = stats.startingMature.toLocaleString("ja-JP");
+  $("net-mature-values-body").innerHTML = stats.points.slice(-12).reverse().map((point) => `
+    <tr>
+      <td>${escapeHtml(point.key)}</td>
+      <td class="${point.net > 0 ? "positive" : point.net < 0 ? "negative" : ""}">${point.net > 0 ? "+" : ""}${point.net.toLocaleString("ja-JP")}</td>
+      <td>${point.cumulative.toLocaleString("ja-JP")}</td>
+    </tr>`).join("");
+  drawNetMatureCanvas($("net-mature-chart"), stats.points);
+}
+
+function drawNetMatureCanvas(canvas, points) {
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const { width, height } = canvas;
+  const left = 68;
+  const right = width - 76;
+  const top = 32;
+  const bottom = height - 58;
+  const chartWidth = right - left;
+  const chartHeight = bottom - top;
+  const data = Array.isArray(points) && points.length ? points : [{ key: "", label: "", net: 0, cumulative: 0 }];
+  const maxNet = Math.max(1, ...data.map((point) => Math.abs(Number(point.net) || 0)));
+  let minCumulative = Math.min(...data.map((point) => Number(point.cumulative) || 0));
+  let maxCumulative = Math.max(...data.map((point) => Number(point.cumulative) || 0));
+  if (minCumulative === maxCumulative) {
+    minCumulative -= 1;
+    maxCumulative += 1;
+  } else {
+    const padding = Math.max(1, (maxCumulative - minCumulative) * 0.08);
+    minCumulative -= padding;
+    maxCumulative += padding;
+  }
+  const xFor = (index) => left + (index + 0.5) * chartWidth / data.length;
+  const yForCumulative = (value) => bottom - (value - minCumulative) / (maxCumulative - minCumulative) * chartHeight;
+  const netZeroY = top + chartHeight / 2;
+  const netScale = (chartHeight / 2 - 8) / maxNet;
+
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#fffdf8";
+  context.fillRect(0, 0, width, height);
+  context.font = "12px sans-serif";
+  context.lineWidth = 1;
+  for (let tick = 0; tick <= 4; tick++) {
+    const y = top + chartHeight * tick / 4;
+    context.strokeStyle = tick === 2 ? "#a9b4ae" : "#e4dfd5";
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(right, y);
+    context.stroke();
+    const cumulativeValue = maxCumulative - (maxCumulative - minCumulative) * tick / 4;
+    context.fillStyle = "#66716b";
+    context.textAlign = "left";
+    context.fillText(Math.round(cumulativeValue).toLocaleString("ja-JP"), right + 10, y + 4);
+  }
+
+  const slotWidth = chartWidth / data.length;
+  const barWidth = Math.max(1, Math.min(14, slotWidth * 0.72));
+  data.forEach((point, index) => {
+    const net = Number(point.net) || 0;
+    if (!net) return;
+    const barHeight = Math.max(1, Math.abs(net) * netScale);
+    context.fillStyle = net > 0 ? "#3ba66b" : "#d05a62";
+    context.fillRect(xFor(index) - barWidth / 2, net > 0 ? netZeroY - barHeight : netZeroY, barWidth, barHeight);
+  });
+
+  context.strokeStyle = "#5f84ff";
+  context.lineWidth = 3;
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  context.beginPath();
+  data.forEach((point, index) => {
+    const x = xFor(index);
+    const y = yForCumulative(Number(point.cumulative) || 0);
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.stroke();
+
+  const labelIndexes = [...new Set([0, Math.floor((data.length - 1) / 3), Math.floor((data.length - 1) * 2 / 3), data.length - 1])];
+  context.fillStyle = "#66716b";
+  context.font = "12px sans-serif";
+  labelIndexes.forEach((index) => {
+    context.textAlign = index === 0 ? "left" : index === data.length - 1 ? "right" : "center";
+    context.fillText(data[index].label, xFor(index), bottom + 28);
+  });
+  context.save();
+  context.translate(18, top + chartHeight / 2);
+  context.rotate(-Math.PI / 2);
+  context.textAlign = "center";
+  context.fillText("Net / 期間", 0, 0);
+  context.restore();
+  context.save();
+  context.translate(width - 18, top + chartHeight / 2);
+  context.rotate(Math.PI / 2);
+  context.textAlign = "center";
+  context.fillText("累積 Mature", 0, 0);
+  context.restore();
 }
 
 function buildFirstAttemptsByProblemDay(history) {
@@ -1370,6 +1505,7 @@ function bindExport() {
     "review-suspension-wrong-transitions",
     "review-daily-new-problem-limit",
     "review-day-boundary-time",
+    "review-mature-interval-days",
     "quiz-random-transform",
   ].forEach((id) => {
     const input = $(id);
@@ -1383,6 +1519,7 @@ function bindExport() {
         suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
         daily_new_problem_limit: $("review-daily-new-problem-limit").value,
         day_boundary_minutes: parseDayBoundaryTime($("review-day-boundary-time").value),
+        mature_interval_days: $("review-mature-interval-days").value,
         quiz_random_transform: $("quiz-random-transform").checked,
       });
     });
@@ -2773,6 +2910,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
         quiz_random_transform: sanitizeBooleanSetting(settingsRecord.reviewSettings?.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
         daily_new_problem_limit: sanitizeDailyNewProblemLimit(settingsRecord.reviewSettings?.daily_new_problem_limit),
         day_boundary_minutes: sanitizeDayBoundaryMinutes(settingsRecord.reviewSettings?.day_boundary_minutes),
+        mature_interval_days: sanitizeMatureIntervalDays(settingsRecord.reviewSettings?.mature_interval_days),
       };
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));

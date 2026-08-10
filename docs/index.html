@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.google.com https://www.recaptcha.net; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google.com https://www.recaptcha.net; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.google.com https://recaptcha.google.com https://www.recaptcha.net; worker-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
-  <link rel="stylesheet" href="style.css?v=20260805-3">
+  <link rel="stylesheet" href="style.css?v=20260811-1">
 </head>
 <body>
   <header>
@@ -80,6 +80,41 @@
           <button id="reset-history" class="danger">学習履歴を削除</button>
         </div>
         <div id="stats-summary" class="stats-list"></div>
+        <section class="net-mature-report" aria-labelledby="net-mature-title">
+          <div class="net-mature-heading">
+            <div>
+              <h3 id="net-mature-title">Net Mature Problems</h3>
+              <p id="net-mature-meta" class="description"></p>
+            </div>
+            <fieldset id="net-mature-periods" class="period-switch">
+              <legend class="visually-hidden">表示期間</legend>
+              <label><input type="radio" name="net-mature-period" value="31" checked><span>1か月</span></label>
+              <label><input type="radio" name="net-mature-period" value="90"><span>3か月</span></label>
+              <label><input type="radio" name="net-mature-period" value="365"><span>1年</span></label>
+              <label><input type="radio" name="net-mature-period" value="0"><span>全期間</span></label>
+            </fieldset>
+          </div>
+          <div class="net-mature-summary">
+            <div><small>現在の Mature Problems</small><strong id="net-mature-current">0</strong></div>
+            <div><small>期間内の Net 変化</small><strong id="net-mature-change">0</strong></div>
+            <div><small>期間開始時</small><strong id="net-mature-start">0</strong></div>
+          </div>
+          <div class="net-mature-legend" aria-hidden="true">
+            <span><i class="net-positive"></i>Net +</span>
+            <span><i class="net-negative"></i>Net −</span>
+            <span><i class="net-cumulative"></i>累積 Net Mature</span>
+          </div>
+          <canvas id="net-mature-chart" class="report-chart net-mature-chart" width="1100" height="430"></canvas>
+          <details class="net-mature-values">
+            <summary>直近12期間の数値</summary>
+            <div class="net-mature-table-wrap">
+              <table>
+                <thead><tr><th>期間</th><th>Net変化</th><th>累積Mature</th></tr></thead>
+                <tbody id="net-mature-values-body"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
         <h3>全体正答率（直近300解答移動平均）</h3>
         <canvas id="overall-chart" class="report-chart" width="1100" height="380"></canvas>
         <div class="section-heading chart-heading">
@@ -297,8 +332,11 @@
             <label>日付の切り替え時刻（日本時間）
               <input id="review-day-boundary-time" type="time" step="60">
             </label>
+            <label>Mature判定の間隔（日）
+              <input id="review-mature-interval-days" type="number" min="1" max="36500" step="1">
+            </label>
           </div>
-          <small>復習の「1日後」は回答から24時間後ではなく、次の日付切り替え時刻です。すべての回答をその日の切り替え時刻に解いたものとして間隔を計算します。</small>
+          <small>復習の「1日後」は回答から24時間後ではなく、次の日付切り替え時刻です。Mature判定は成績画面のNet Matureグラフに使い、初期値は28日です。</small>
           <label class="inline-option quiz-transform-setting">
             <input id="quiz-random-transform" type="checkbox">
             出題ごとにマンズ・ピンズ・ソーズをシャッフルし、数牌全体の上下反転をランダム適用する
@@ -394,8 +432,9 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260809-1"></script>
-  <script type="module" src="firebase-sync.js?v=20260809-1"></script>
-  <script src="app.js?v=20260809-1"></script>
+  <script src="version.js?v=20260811-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260811-1"></script>
+  <script src="net-mature-core.js?v=20260811-1"></script>
+  <script src="app.js?v=20260811-1"></script>
 </body>
 </html>

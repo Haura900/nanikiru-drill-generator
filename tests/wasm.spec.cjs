@@ -327,27 +327,31 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
   expect(result.presentation.simulator.rows[0].necessary_tiles[0].tile).toBe("8s");
 });
 
-test("data settings persist the suspension threshold, daily new limit, day boundary and quiz transform", async ({ page }) => {
+test("data settings persist the suspension threshold, daily new limit, day boundary, Mature threshold and quiz transform", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("10");
   await expect(page.locator("#review-day-boundary-time")).toHaveValue("00:00");
+  await expect(page.locator("#review-mature-interval-days")).toHaveValue("28");
   await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
   await page.locator("#review-suspension-wrong-transitions").fill("12");
   await page.locator("#review-daily-new-problem-limit").fill("15");
   await page.locator("#review-day-boundary-time").fill("04:30");
+  await page.locator("#review-mature-interval-days").fill("35");
   await page.locator("#quiz-random-transform").check();
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")));
   expect(stored.suspension_wrong_transitions).toBe(12);
   expect(stored.daily_new_problem_limit).toBe(15);
   expect(stored.day_boundary_minutes).toBe(270);
+  expect(stored.mature_interval_days).toBe(35);
   expect(stored.quiz_random_transform).toBe(true);
   await page.reload();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("15");
   await expect(page.locator("#review-day-boundary-time")).toHaveValue("04:30");
+  await expect(page.locator("#review-mature-interval-days")).toHaveValue("35");
   await expect(page.locator("#quiz-random-transform")).toBeChecked();
 });
 
@@ -382,6 +386,7 @@ test("legacy cloud settings load with defaults for newly added settings", async 
     quiz_random_transform: true,
     daily_new_problem_limit: 10,
     day_boundary_minutes: 0,
+    mature_interval_days: 28,
   });
   expect(stored.adminCount).toBe("9");
   expect(stored.genreOrder).toEqual(["旧設定"]);
