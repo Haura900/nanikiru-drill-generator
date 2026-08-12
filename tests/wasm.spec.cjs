@@ -25,6 +25,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
     worker.postMessage({
       id: 1,
       payload: {
+        game_mode: 1,
         round_wind: 27,
         seat_wind: 28,
         dora_indicators: [],
@@ -34,16 +35,24 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         enable_uradora: false,
         enable_shanten_down: true,
         enable_tegawari: true,
-        objective: 2,
+        auto_disable_deep_search: true,
+        enable_riichi: true,
+        enable_calls: false,
+        enable_turn_yaku: true,
+        calc_stats: true,
+        calc_yaku_stats: false,
+        calc_shapley_stats: false,
+        ron_rate: 0,
+        version: "0.9.10",
       },
     });
   }));
   expect(result.success).toBe(true);
   expect(result.stats).toHaveLength(10);
   const ranked = [...result.stats].sort((a, b) => b.exp_score[6] - a.exp_score[6]);
-  expect(ranked[0].tile).toBe(16);
-  expect(ranked[1].tile).toBe(17);
-  expect(ranked[0].exp_score[6]).toBeCloseTo(1329.1878, 3);
+  expect(ranked[0].tile).toBe(17);
+  expect(ranked[1].tile).toBe(16);
+  expect(ranked[0].exp_score[6]).toBeCloseTo(1506.9471, 3);
   expect(cspViolations).toEqual([]);
 });
 
@@ -51,6 +60,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
     const payload = {
+      game_mode: 1,
       round_wind: 27,
       seat_wind: 28,
       dora_indicators: [],
@@ -60,7 +70,15 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       enable_uradora: false,
       enable_shanten_down: true,
       enable_tegawari: true,
-      objective: 2,
+      auto_disable_deep_search: true,
+      enable_riichi: true,
+      enable_calls: false,
+      enable_turn_yaku: true,
+      calc_stats: true,
+      calc_yaku_stats: false,
+      calc_shapley_stats: false,
+      ron_rate: 0,
+      version: "0.9.10",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;

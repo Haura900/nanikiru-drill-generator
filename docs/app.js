@@ -43,7 +43,7 @@ let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
-const WASM_ASSET_VERSION = "20260623-2";
+const WASM_ASSET_VERSION = "engine-v0.9.10";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 const WASM_DEFAULT_FLAGS = Object.freeze({
@@ -1696,12 +1696,25 @@ async function analyzeWithWasm(handText, melds, payload) {
       type: meld.type,
       tiles: meld.tiles.map(tileIndex),
     })),
+    game_mode: 1,
     enable_reddora: true,
     enable_uradora: false,
     enable_shanten_down: mode.flags.enable_shanten_down,
     enable_tegawari: mode.flags.enable_tegawari,
-    objective: 2,
+    auto_disable_deep_search: true,
+    enable_riichi: true,
+    enable_calls: false,
+    enable_turn_yaku: true,
+    calc_stats: true,
+    calc_yaku_stats: false,
+    calc_shapley_stats: false,
+    ron_rate: 0,
+    version: "0.9.10",
   });
+  if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
+  if (raw.engine_version !== "0.9.10" || raw.api_version !== 1) {
+    throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
+  }
   return summarizeWasmResult(raw, payload.turn);
 }
 
@@ -1862,8 +1875,9 @@ async function runWasmRequest(payload, allowRetry = true) {
   if (!requestKey) {
     wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
   }
+  const { __wasmRequestKey: _requestKey, ...enginePayload } = payload;
   const requestPayload = {
-    ...payload,
+    ...enginePayload,
     enable_shanten_down: mode.flags.enable_shanten_down,
     enable_tegawari: mode.flags.enable_tegawari,
   };
@@ -1924,7 +1938,7 @@ function summarizeWasmResult(raw, turn) {
   })).sort((a, b) => b.metric - a.metric);
   const best = rows[0]?.metric || 0;
   return {
-    version: "0.9.6-wasm",
+    version: raw.engine_version,
     turn,
     objective: 2,
     shanten: raw.shanten,
