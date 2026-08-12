@@ -43,12 +43,15 @@ Googleログインによる端末間同期を利用する場合は、[FIREBASE_S
 python -m unittest discover -s tests -v
 ```
 
-## WebAssembly の再ビルド
+## WebAssembly エンジンの更新
 
-シミュレーター本体を更新したら、`docs/wasm/` を再生成します。
+ブラウザ版は `engine-lock.json` で BigCoach と同じ
+`Haura900/mahjong-cpp` リリースに固定しています。エンジン本体とWASMの
+ビルドはエンジン側で管理し、このリポジトリでは検証済み成果物だけを
+`docs/wasm/` へ取り込みます。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build_wasm.ps1
+npm run engine:update
 ```
 
 ## 補足

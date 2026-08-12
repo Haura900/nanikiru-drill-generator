@@ -18,7 +18,7 @@ self.onmessage = async (event) => {
   try {
     const module = await getModule();
     const result = JSON.parse(module.analyzeJson(JSON.stringify(payload)));
-    self.postMessage({ id, result });
+    self.postMessage({ id, result, engineVersion: module.engineVersion() });
   } catch (error) {
     self.postMessage({ id, error: error?.message || String(error) });
   }
