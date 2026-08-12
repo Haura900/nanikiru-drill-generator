@@ -43,7 +43,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         calc_yaku_stats: false,
         calc_shapley_stats: false,
         ron_rate: 0,
-        version: "0.9.10",
+        version: "0.9.11",
       },
     });
   }));
@@ -92,7 +92,7 @@ test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) 
         calc_shapley_stats: true,
         ron_rate: 0.7,
         remaining_tiles: 48,
-        version: "0.9.10",
+        version: "0.9.11",
       },
     });
   }));
@@ -125,7 +125,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       calc_yaku_stats: false,
       calc_shapley_stats: false,
       ron_rate: 0,
-      version: "0.9.10",
+      version: "0.9.11",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;
@@ -519,7 +519,7 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
         tile: 0, shanten: 1, exp_score: scores, win_prob: probabilities, tenpai_prob: probabilities,
         call_prob: probabilities, call_win_prob: probabilities, necessary_tiles: [], call_tile_stats: [],
         yaku_stats: [{
-          yaku: 2, occurrence_prob: probabilities, inclusive_score: scores, marginal_score: scores,
+          yaku: 2, occurrence_prob: probabilities,
           shapley_score: scores, called_occurrence_prob: probabilities, called_shapley_score: scores,
         }],
       }],
@@ -537,6 +537,30 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
   expect(result.captured.other_win_hazard[0]).toBeCloseTo(0.05, 10);
   expect(result.row.yaku_contributions[0].name).toBe("立直");
   expect(result.row.call_probability).toBeCloseTo(0.2, 10);
+});
+
+test("WASM fallback preserves shanten-down before disabling both search options", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const mode = {
+      degraded: false,
+      requestedFlags: { enable_shanten_down: true, enable_tegawari: true },
+      flags: { enable_shanten_down: true, enable_tegawari: true },
+    };
+    const first = nextWasmFallbackFlags(mode);
+    mode.degraded = true;
+    mode.flags = first;
+    const warning = wasmFallbackWarning(mode);
+    const second = nextWasmFallbackFlags(mode);
+    mode.flags = second;
+    const third = nextWasmFallbackFlags(mode);
+    return { first, warning, second, third };
+  });
+
+  expect(result.first).toEqual({ enable_shanten_down: true, enable_tegawari: false });
+  expect(result.warning).toContain("手替わりだけを無効化");
+  expect(result.second).toEqual({ enable_shanten_down: false, enable_tegawari: true });
+  expect(result.third).toEqual({ enable_shanten_down: false, enable_tegawari: false });
 });
 
 test("legacy simulator results and changed settings trigger a lazy statistics refresh", async ({ page }) => {
@@ -561,7 +585,7 @@ test("simulator table shows stable-color Shapley bars and called-hand details", 
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => {
     const yaku = (value, name, shortName, shapley, occurrence) => ({
-      yaku: value, name, short_name: shortName, shapley, occurrence, inclusive: shapley, marginal: shapley,
+      yaku: value, name, short_name: shortName, shapley, occurrence,
     });
     const rows = [
       {

@@ -57,7 +57,7 @@ let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
-const WASM_ASSET_VERSION = "engine-v0.9.10";
+const WASM_ASSET_VERSION = "engine-v0.9.11";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 const WASM_DEFAULT_FLAGS = Object.freeze({
@@ -91,7 +91,12 @@ let selectedManagedProblemId = null;
 let managementPage = 0;
 const selectedManagementIds = new Set();
 let wasmActiveRequestKey = null;
-let wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+let wasmActiveRequestMode = {
+  degraded: false,
+  fallbackReason: "",
+  requestedFlags: { ...WASM_DEFAULT_FLAGS },
+  flags: { ...WASM_DEFAULT_FLAGS },
+};
 let lastWasmMode = null;
 let netMaturePeriodDays = 31;
 
@@ -1807,7 +1812,7 @@ async function analyzeWithWasm(handText, melds, payload) {
   const mode = wasmModeForRequest(requestKey, requestedFlags);
   const raw = await wasmAnalyze(buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey));
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
-  if (raw.engine_version !== "0.9.10" || raw.api_version !== 1) {
+  if (raw.engine_version !== "0.9.11" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
   const simulation = summarizeWasmResult(raw, payload.turn);
@@ -1895,7 +1900,7 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     calc_shapley_stats: true,
     ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
     remaining_tiles: Math.min(70, Math.max(0, (18 - Math.min(18, Math.max(1, Number(payload.turn) || 1))) * 4)),
-    version: "0.9.10",
+    version: "0.9.11",
   };
 }
 
@@ -2005,6 +2010,7 @@ function wasmModeForRequest(requestKey, requestedFlags = WASM_DEFAULT_FLAGS) {
     wasmActiveRequestMode = {
       degraded: false,
       fallbackReason: "",
+      requestedFlags: { ...requestedFlags },
       flags: { ...requestedFlags },
     };
   }
@@ -2056,50 +2062,80 @@ function isRecoverableWasmError(error) {
     .test(error?.message || "");
 }
 
-async function runWasmRequest(payload, allowRetry = true) {
+function wasmFallbackCandidates(requestedFlags) {
+  const shantenDown = Boolean(requestedFlags.enable_shanten_down);
+  const tegawari = Boolean(requestedFlags.enable_tegawari);
+  if (shantenDown && tegawari) {
+    return [
+      { enable_shanten_down: true, enable_tegawari: false },
+      { enable_shanten_down: false, enable_tegawari: true },
+      { enable_shanten_down: false, enable_tegawari: false },
+    ];
+  }
+  return shantenDown || tegawari
+    ? [{ enable_shanten_down: false, enable_tegawari: false }]
+    : [];
+}
+
+function sameWasmFlags(left, right) {
+  return Boolean(left?.enable_shanten_down) === Boolean(right?.enable_shanten_down)
+    && Boolean(left?.enable_tegawari) === Boolean(right?.enable_tegawari);
+}
+
+function nextWasmFallbackFlags(mode) {
+  const candidates = wasmFallbackCandidates(mode.requestedFlags);
+  const currentIndex = candidates.findIndex((candidate) => sameWasmFlags(candidate, mode.flags));
+  return candidates[currentIndex + 1] || null;
+}
+
+function sendWasmRequest(requestPayload) {
+  return new Promise((resolve, reject) => {
+    const id = ++wasmRequestId;
+    const timer = setTimeout(() => {
+      wasmRequests.delete(id);
+      resetWasmWorker();
+      reject(new Error("シミュレーターの計算が時間内に完了しませんでした。"));
+    }, WASM_REQUEST_TIMEOUT);
+    wasmRequests.set(id, { resolve, reject, timer });
+    wasmWorker.postMessage({ id, payload: requestPayload });
+  });
+}
+
+async function runWasmRequest(payload) {
   if (!wasmWorker || wasmWorkerUseCount >= WASM_RECYCLE_AFTER) {
     resetWasmWorker();
     createWasmWorker();
   }
   const requestKey = payload.__wasmRequestKey || null;
+  const requestedFlags = {
+    enable_shanten_down: payload.enable_shanten_down ?? WASM_DEFAULT_FLAGS.enable_shanten_down,
+    enable_tegawari: payload.enable_tegawari ?? WASM_DEFAULT_FLAGS.enable_tegawari,
+  };
   const mode = requestKey
-    ? wasmModeForRequest(requestKey)
-    : { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+    ? wasmModeForRequest(requestKey, requestedFlags)
+    : { degraded: false, fallbackReason: "", requestedFlags, flags: { ...requestedFlags } };
   if (!requestKey) {
-    wasmActiveRequestMode = { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+    wasmActiveRequestMode = mode;
   }
   const { __wasmRequestKey: _requestKey, ...enginePayload } = payload;
-  const requestPayload = {
-    ...enginePayload,
-    enable_shanten_down: mode.flags.enable_shanten_down,
-    enable_tegawari: mode.flags.enable_tegawari,
-  };
-  try {
-    return await new Promise((resolve, reject) => {
-      const id = ++wasmRequestId;
-      const timer = setTimeout(() => {
-        wasmRequests.delete(id);
-        resetWasmWorker();
-        reject(new Error("シミュレーターの計算が時間内に完了しませんでした。"));
-      }, WASM_REQUEST_TIMEOUT);
-      wasmRequests.set(id, { resolve, reject, timer });
-      wasmWorker.postMessage({ id, payload: requestPayload });
-    });
-  } catch (error) {
-    if (!allowRetry || !isRecoverableWasmError(error)) throw error;
-    if (requestKey) {
-      wasmActiveRequestMode = {
-        degraded: true,
-        fallbackReason: error?.message || String(error),
-        flags: {
-          enable_shanten_down: false,
-          enable_tegawari: false,
-        },
-      };
+  for (;;) {
+    const requestPayload = {
+      ...enginePayload,
+      enable_shanten_down: mode.flags.enable_shanten_down,
+      enable_tegawari: mode.flags.enable_tegawari,
+    };
+    try {
+      return await sendWasmRequest(requestPayload);
+    } catch (error) {
+      const nextFlags = isRecoverableWasmError(error) ? nextWasmFallbackFlags(mode) : null;
+      if (!nextFlags) throw error;
+      mode.degraded = true;
+      mode.fallbackReason = error?.message || String(error);
+      mode.flags = nextFlags;
+      wasmActiveRequestMode = mode;
+      resetWasmWorker();
+      createWasmWorker();
     }
-    resetWasmWorker();
-    createWasmWorker();
-    return runWasmRequest(payload, false);
   }
 }
 
@@ -2110,7 +2146,12 @@ function wasmAnalyze(payload) {
 }
 
 function summarizeWasmResult(raw, turn) {
-  lastWasmMode = wasmActiveRequestMode || { degraded: false, fallbackReason: "", flags: { ...WASM_DEFAULT_FLAGS } };
+  lastWasmMode = wasmActiveRequestMode || {
+    degraded: false,
+    fallbackReason: "",
+    requestedFlags: { ...WASM_DEFAULT_FLAGS },
+    flags: { ...WASM_DEFAULT_FLAGS },
+  };
   const code = (index) => {
     if (index < 9) return `${index + 1}m`;
     if (index < 18) return `${index - 8}p`;
@@ -2131,12 +2172,9 @@ function summarizeWasmResult(raw, turn) {
         name,
         short_name: yakuShortName(entry.yaku, name),
         occurrence: at(entry.occurrence_prob),
-        inclusive: at(entry.inclusive_score),
-        marginal: at(entry.marginal_score),
         shapley: at(entry.shapley_score),
       };
-    }).filter((entry) => entry.occurrence > 1e-12 || Math.abs(entry.inclusive) > 1e-9
-      || Math.abs(entry.marginal) > 1e-9 || Math.abs(entry.shapley) > 1e-9)
+    }).filter((entry) => entry.occurrence > 1e-12 || Math.abs(entry.shapley) > 1e-9)
       .sort((a, b) => b.shapley - a.shapley);
     const calledYakuContributions = callProbability > 1e-12
       ? (stat.yaku_stats || []).map((entry) => {
@@ -2194,6 +2232,15 @@ function summarizeWasmResult(raw, turn) {
   };
 }
 
+function wasmFallbackWarning(mode) {
+  if (!mode?.degraded) return "";
+  const disabled = [];
+  if (mode.requestedFlags?.enable_shanten_down && !mode.flags?.enable_shanten_down) disabled.push("シャンテン戻し");
+  if (mode.requestedFlags?.enable_tegawari && !mode.flags?.enable_tegawari) disabled.push("手替わり");
+  const detail = disabled.length ? `${disabled.join("・")}だけを無効化` : "軽量化";
+  return `ブラウザ版の計算停止を避けるため、${detail}して計算しています。`;
+}
+
 function yakuBitIndex(value) {
   const numeric = Number(value);
   const index = Math.log2(numeric);
@@ -2220,8 +2267,6 @@ function aggregateYakuContributions(entries, limit = 5) {
     yaku: null,
     name: "その他",
     short_name: "他",
-    inclusive: hidden.reduce((sum, entry) => sum + Number(entry.inclusive || 0), 0),
-    marginal: hidden.reduce((sum, entry) => sum + Number(entry.marginal || 0), 0),
     shapley: hidden.reduce((sum, entry) => sum + Number(entry.shapley || 0), 0),
     count: hidden.length,
   }];
@@ -2379,7 +2424,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はシャンテン戻し・手替わりを無効化して検証しました。" : ""}`,
+      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -3706,7 +3751,7 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
       </div>
       <span>${simulation.turn}巡目・${simulation.shanten?.all ?? "-"}シャンテン</span>
     </div>
-    ${simulation.solver_mode?.degraded ? `<p class="sim-warning">この結果は、シャンテン戻し・手替わりを無効化した状態で計算しています。</p>` : ""}
+    ${simulation.solver_mode?.degraded ? `<p class="sim-warning">${escapeHtml(wasmFallbackWarning(simulation.solver_mode))}</p>` : ""}
     <div class="sim-table-wrap">
       <table class="sim-table">
         <thead>
