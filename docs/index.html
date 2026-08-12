@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://www.google.com https://www.recaptcha.net; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://www.google.com https://www.recaptcha.net; frame-src https://*.firebaseapp.com https://accounts.google.com https://www.google.com https://recaptcha.google.com https://www.recaptcha.net; worker-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>類題何切る量産ドリル</title>
-  <link rel="stylesheet" href="style.css?v=20260811-1">
+  <link rel="stylesheet" href="style.css?v=20260812-1">
 </head>
 <body>
   <header>
@@ -343,6 +343,36 @@
           </label>
           <small>色の置換6通り × 数値反転あり/なしの12通りから選びます。数値反転はマンズ・ピンズ・ソーズの3種類へ必ず一斉に適用します。</small>
         </div>
+
+        <div class="review-settings simulator-settings">
+          <h3>何切るシミュレーター設定</h3>
+          <p class="description">問題の検証・類題生成で使う計算条件です。役別Shapleyと副露結果にも反映されます。</p>
+          <div class="simulator-option-grid">
+            <label><input id="simulator-enable-reddora" type="checkbox"> 赤ドラ</label>
+            <label><input id="simulator-enable-uradora" type="checkbox"> 裏ドラ</label>
+            <label><input id="simulator-enable-shanten-down" type="checkbox"> シャンテン戻し</label>
+            <label><input id="simulator-enable-tegawari" type="checkbox"> 手替わり</label>
+            <label><input id="simulator-enable-riichi" type="checkbox"> リーチ</label>
+            <label><input id="simulator-enable-calls" type="checkbox"> 副露（1回先・シャンテンが進む鳴き）</label>
+            <label><input id="simulator-auto-disable-deep-search" type="checkbox"> 4シャンテン以上でシャンテン戻し・手替わりを自動OFF</label>
+            <label><input id="simulator-enable-other-win-stop" type="checkbox"> 他家の和了で計算を打ち切る</label>
+          </div>
+          <label class="simulator-rate-setting">和了のうちツモの割合（%）
+            <input id="simulator-tsumo-win-share-percent" type="number" min="0" max="100" step="1">
+          </label>
+          <details class="hazard-settings">
+            <summary>他家和了ハザードを巡目別に設定</summary>
+            <p class="description">その巡目まで局が続いた条件で、他家3人の誰かが和了する確率です。</p>
+            <div class="hazard-table-wrap">
+              <table class="hazard-table">
+                <thead><tr><th>巡目</th><th>%</th><th>巡目</th><th>%</th><th>巡目</th><th>%</th></tr></thead>
+                <tbody id="simulator-other-win-hazard-grid"></tbody>
+              </table>
+            </div>
+            <small>18巡目は17巡目と同じ値を使用します。</small>
+          </details>
+          <small>これらの設定はセーブデータに含まれ、Googleログイン時はクラウド同期されます。</small>
+        </div>
         
         <div class="data-output-section">
           <h3>データの出力</h3>
@@ -432,9 +462,9 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260811-1"></script>
-  <script type="module" src="firebase-sync.js?v=20260811-1"></script>
-  <script src="net-mature-core.js?v=20260811-1"></script>
-  <script src="app.js?v=20260811-1"></script>
+  <script src="version.js?v=20260812-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260812-1"></script>
+  <script src="net-mature-core.js?v=20260812-1"></script>
+  <script src="app.js?v=20260812-1"></script>
 </body>
 </html>

@@ -56,6 +56,53 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
   expect(cspViolations).toEqual([]);
 });
 
+test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) => {
+  test.setTimeout(180000);
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => new Promise((resolve, reject) => {
+    const worker = new Worker("wasm/worker.js", { type: "module" });
+    const timer = setTimeout(() => reject(new Error("WASM worker timeout")), 170000);
+    worker.onmessage = (event) => {
+      clearTimeout(timer);
+      worker.terminate();
+      event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result);
+    };
+    worker.onerror = (event) => reject(new Error(event.message));
+    worker.postMessage({
+      id: 1,
+      payload: {
+        game_mode: 1,
+        round_wind: 27,
+        seat_wind: 28,
+        dora_indicators: [],
+        hand: [1, 2, 6, 9, 11, 14, 14, 16, 23, 24, 25, 32, 32, 33],
+        melds: [],
+        enable_reddora: true,
+        enable_uradora: true,
+        enable_shanten_down: false,
+        enable_tegawari: false,
+        auto_disable_deep_search: true,
+        enable_riichi: true,
+        enable_calls: true,
+        enable_other_win_stop: false,
+        other_win_hazard: Array(18).fill(0),
+        enable_turn_yaku: true,
+        calc_stats: true,
+        calc_yaku_stats: true,
+        calc_shapley_stats: true,
+        ron_rate: 0.7,
+        remaining_tiles: 48,
+        version: "0.9.10",
+      },
+    });
+  }));
+  expect(result.success).toBe(true);
+  expect(result.stats.length).toBeGreaterThan(0);
+  expect(result.stats.some((stat) => stat.yaku_stats?.some((entry) => entry.shapley_score?.[6] > 0))).toBe(true);
+  expect(result.stats.some((stat) => stat.call_prob?.[6] > 0)).toBe(true);
+  expect(result.stats.some((stat) => stat.call_tile_stats?.some((entry) => entry.probability?.[6] > 0))).toBe(true);
+});
+
 test("wasm worker is recycled without breaking analysis", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
@@ -353,17 +400,33 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   await expect(page.locator("#review-day-boundary-time")).toHaveValue("00:00");
   await expect(page.locator("#review-mature-interval-days")).toHaveValue("28");
   await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
+  await expect(page.locator("#simulator-enable-calls")).toBeChecked();
+  await expect(page.locator("#simulator-enable-uradora")).toBeChecked();
+  await expect(page.locator("#simulator-tsumo-win-share-percent")).toHaveValue("30");
   await page.locator("#review-suspension-wrong-transitions").fill("12");
   await page.locator("#review-daily-new-problem-limit").fill("15");
   await page.locator("#review-day-boundary-time").fill("04:30");
   await page.locator("#review-mature-interval-days").fill("35");
   await page.locator("#quiz-random-transform").check();
+  await page.locator("#simulator-enable-calls").uncheck();
+  await page.locator("#simulator-tsumo-win-share-percent").fill("42");
+  await page.locator(".hazard-settings").evaluate((details) => { details.open = true; });
+  await page.locator("#simulator-other-win-hazard-grid [data-hazard-turn='10']").fill("8.25");
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-review-settings-v1")));
   expect(stored.suspension_wrong_transitions).toBe(12);
   expect(stored.daily_new_problem_limit).toBe(15);
   expect(stored.day_boundary_minutes).toBe(270);
   expect(stored.mature_interval_days).toBe(35);
   expect(stored.quiz_random_transform).toBe(true);
+  expect(stored.simulator_enable_calls).toBe(false);
+  expect(stored.simulator_tsumo_win_share_percent).toBe(42);
+  expect(stored.simulator_other_win_hazard_percent[9]).toBe(8.25);
+  const savedSettings = await page.evaluate(() => ({
+    backup: window.NanikiruSaveData.buildSaveData().s,
+    cloud: window.NanikiruSaveData.getSettings().reviewSettings,
+  }));
+  expect(savedSettings.backup.simulator_tsumo_win_share_percent).toBe(42);
+  expect(savedSettings.cloud.simulator_enable_calls).toBe(false);
   await page.reload();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
@@ -371,6 +434,9 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   await expect(page.locator("#review-day-boundary-time")).toHaveValue("04:30");
   await expect(page.locator("#review-mature-interval-days")).toHaveValue("35");
   await expect(page.locator("#quiz-random-transform")).toBeChecked();
+  await expect(page.locator("#simulator-enable-calls")).not.toBeChecked();
+  await expect(page.locator("#simulator-tsumo-win-share-percent")).toHaveValue("42");
+  await expect(page.locator("#simulator-other-win-hazard-grid [data-hazard-turn='10']")).toHaveValue("8.25");
 });
 
 test("legacy cloud settings load with defaults for newly added settings", async ({ page }) => {
@@ -405,9 +471,111 @@ test("legacy cloud settings load with defaults for newly added settings", async 
     daily_new_problem_limit: 10,
     day_boundary_minutes: 0,
     mature_interval_days: 28,
+    simulator_enable_reddora: true,
+    simulator_enable_uradora: true,
+    simulator_enable_shanten_down: true,
+    simulator_enable_tegawari: true,
+    simulator_auto_disable_deep_search: true,
+    simulator_enable_riichi: true,
+    simulator_enable_calls: true,
+    simulator_enable_other_win_stop: true,
+    simulator_tsumo_win_share_percent: 30,
+    simulator_other_win_hazard_percent: [
+      0.02, 0.08, 0.29, 0.78, 1.70, 3.05, 4.67, 6.44, 8.23,
+      9.75, 11.08, 12.12, 12.76, 13.12, 13.23, 13.09, 11.70, 11.70,
+    ],
   });
   expect(stored.adminCount).toBe("9");
   expect(stored.genreOrder).toEqual(["旧設定"]);
+});
+
+test("simulator settings are forwarded to WASM and Shapley output is parsed", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      simulator_enable_reddora: false,
+      simulator_enable_uradora: true,
+      simulator_enable_shanten_down: false,
+      simulator_enable_tegawari: true,
+      simulator_auto_disable_deep_search: true,
+      simulator_enable_riichi: true,
+      simulator_enable_calls: true,
+      simulator_enable_other_win_stop: true,
+      simulator_tsumo_win_share_percent: 35,
+      simulator_other_win_hazard_percent: Array(18).fill(5),
+      quiz_random_transform: false,
+    }));
+    const settings = loadReviewSettings();
+    const scene = { turn: 6, round_wind: "1z", seat_wind: "2z", dora: "", objective: 2 };
+    const mode = { flags: { enable_shanten_down: false, enable_tegawari: true } };
+    const captured = buildSimulatorEnginePayload("123m123p123s11122z", [], scene, settings, mode, "test");
+    const probabilities = Array(19).fill(0);
+    probabilities[6] = 0.2;
+    const scores = Array(19).fill(0);
+    scores[6] = 1200;
+    const simulation = summarizeWasmResult({
+      shanten: { all: 1 },
+      stats: [{
+        tile: 0, shanten: 1, exp_score: scores, win_prob: probabilities, tenpai_prob: probabilities,
+        call_prob: probabilities, call_win_prob: probabilities, necessary_tiles: [], call_tile_stats: [],
+        yaku_stats: [{
+          yaku: 2, occurrence_prob: probabilities, inclusive_score: scores, marginal_score: scores,
+          shapley_score: scores, called_occurrence_prob: probabilities, called_shapley_score: scores,
+        }],
+      }],
+    }, 6);
+    return { captured, row: simulation.rows[0] };
+  });
+  expect(result.captured.enable_reddora).toBe(false);
+  expect(result.captured.enable_uradora).toBe(true);
+  expect(result.captured.enable_calls).toBe(true);
+  expect(result.captured.enable_other_win_stop).toBe(true);
+  expect(result.captured.calc_yaku_stats).toBe(true);
+  expect(result.captured.calc_shapley_stats).toBe(true);
+  expect(result.captured.ron_rate).toBeCloseTo(0.65, 10);
+  expect(result.captured.remaining_tiles).toBe(48);
+  expect(result.captured.other_win_hazard[0]).toBeCloseTo(0.05, 10);
+  expect(result.row.yaku_contributions[0].name).toBe("立直");
+  expect(result.row.call_probability).toBeCloseTo(0.2, 10);
+});
+
+test("simulator table shows stable-color Shapley bars and called-hand details", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await page.evaluate(() => {
+    const yaku = (value, name, shortName, shapley, occurrence) => ({
+      yaku: value, name, short_name: shortName, shapley, occurrence, inclusive: shapley, marginal: shapley,
+    });
+    const rows = [
+      {
+        tile: "1m", metric: 1200, expected_score: 1200, win_probability: 0.2, tenpai_probability: 0.5,
+        call_probability: 0.08, call_win_probability: 0.03, ukeire: 0, necessary_tiles: [], shanten: 1,
+        yaku_contributions: [yaku(2, "立直", "立", 700, 0.15), yaku(1024, "ドラ", "ド", 500, 0.12)],
+        called_yaku_contributions: [yaku(16384, "發", "發", 400, 0.4)],
+        call_tile_rates: [{ tile: "6z", probability: 0.04, conditional_probability: 0.5 }],
+        shapley_total: 1200, shapley_residual: 0,
+      },
+      {
+        tile: "2m", metric: 900, expected_score: 900, win_probability: 0.17, tenpai_probability: 0.46,
+        call_probability: 0, call_win_probability: 0, ukeire: 0, necessary_tiles: [], shanten: 1,
+        yaku_contributions: [yaku(2, "立直", "立", 500, 0.11), yaku(4096, "赤ドラ", "赤", 400, 0.1)],
+        called_yaku_contributions: [], call_tile_rates: [], shapley_total: 900, shapley_residual: 0,
+      },
+    ];
+    rows.forEach((row) => { row.yaku_chart_contributions = aggregateYakuContributions(row.yaku_contributions); });
+    renderSimulatorTable(document.getElementById("quiz-simulator-result"), {
+      turn: 6, shanten: { all: 1 }, rows,
+    }, ["1m"], "1m");
+  });
+  await expect(page.locator(".shapley-track")).toHaveCount(2);
+  const riichiSegments = page.locator('.shapley-segment[data-yaku="2"]');
+  await expect(riichiSegments).toHaveCount(2);
+  const colors = await riichiSegments.evaluateAll((segments) => segments.map((segment) => segment.style.background));
+  expect(colors[0]).toBe(colors[1]);
+  await expect(page.locator(".sim-table > thead")).toContainText("副露和了率");
+  await page.locator(".shapley-details").first().evaluate((details) => { details.open = true; });
+  await expect(page.locator(".shapley-details").first()).toContainText("副露発生 8.00%");
+  await expect(page.locator(".shapley-details").first()).toContainText("發");
+  await expect(page.locator(".shapley-details").first()).toContainText("残差");
 });
 
 test("configured JST day boundary controls daily grouping and the new-problem quota", async ({ page }) => {

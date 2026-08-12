@@ -20,6 +20,10 @@ const MAX_BACKUP_TEXT_CHARS = MAX_DECOMPRESSED_BACKUP_BYTES;
 const MAX_BACKUP_BASE64_CHARS = Math.ceil(MAX_BACKUP_FILE_BYTES * 4 / 3) + 16;
 const MANAGEMENT_PAGE_SIZE = 200;
 let suppressCloudUpload = false;
+const DEFAULT_OTHER_WIN_HAZARD_PERCENT = Object.freeze([
+  0.02, 0.08, 0.29, 0.78, 1.70, 3.05, 4.67, 6.44, 8.23,
+  9.75, 11.08, 12.12, 12.76, 13.12, 13.23, 13.09, 11.70, 11.70,
+]);
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
   wrong_retry_days: 0,
@@ -30,6 +34,16 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   daily_new_problem_limit: 10,
   day_boundary_minutes: 0,
   mature_interval_days: 28,
+  simulator_enable_reddora: true,
+  simulator_enable_uradora: true,
+  simulator_enable_shanten_down: true,
+  simulator_enable_tegawari: true,
+  simulator_auto_disable_deep_search: true,
+  simulator_enable_riichi: true,
+  simulator_enable_calls: true,
+  simulator_enable_other_win_stop: true,
+  simulator_tsumo_win_share_percent: 30,
+  simulator_other_win_hazard_percent: DEFAULT_OTHER_WIN_HAZARD_PERCENT,
 });
 let problems = [];
 let currentProblem = null;
@@ -50,6 +64,23 @@ const WASM_DEFAULT_FLAGS = Object.freeze({
   enable_shanten_down: true,
   enable_tegawari: true,
 });
+const YAKU_NAMES = Object.freeze([
+  "門前清自摸和", "立直", "一発", "断么九", "平和", "一盃口", "槍槓", "嶺上開花",
+  "海底摸月", "河底撈魚", "ドラ", "裏ドラ", "赤ドラ", "白", "發", "中",
+  "自風 東", "自風 南", "自風 西", "自風 北", "場風 東", "場風 南", "場風 西", "場風 北",
+  "ダブル立直", "七対子", "対々和", "三暗刻", "三色同刻", "三色同順", "混老頭", "一気通貫",
+  "混全帯么九", "小三元", "三槓子", "混一色", "純全帯么九", "二盃口", "流し満貫", "清一色",
+  "天和", "地和", "人和", "緑一色", "大三元", "小四喜", "字一色", "国士無双",
+  "九蓮宝燈", "四暗刻", "清老頭", "四槓子", "四暗刻単騎", "大四喜", "純正九蓮宝燈",
+  "国士無双十三面", "抜きドラ",
+]);
+const YAKU_SHORT_NAMES = Object.freeze([
+  "自摸", "立", "一", "断", "平", "一盃", "槍", "嶺", "海", "河", "ド", "裏", "赤", "白", "發", "中",
+  "自東", "自南", "自西", "自北", "場東", "場南", "場西", "場北", "W立", "七対", "対々", "三暗",
+  "三刻", "三色", "混老", "一通", "混全", "小三", "三槓", "混一", "純全", "二盃", "流満", "清一",
+  "天", "地", "人", "緑", "大三", "小四", "字一", "国士", "九蓮", "四暗", "清老", "四槓",
+  "四単", "大四", "純九", "国十三", "抜",
+]);
 const APP_BUILD_VERSION = typeof window !== "undefined" ? window.NANIKIRU_BUILD_VERSION || "local" : "local";
 let pendingMeldTiles = [];
 let reviewSkippedThisSession = false;
@@ -684,6 +715,10 @@ function loadReviewSettings() {
   } catch {
     stored = {};
   }
+  return sanitizeReviewSettings(stored);
+}
+
+function sanitizeReviewSettings(stored = {}) {
   return {
     first_correct_days: sanitizeReviewSetting(stored.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
     wrong_retry_days: sanitizeReviewSetting(stored.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
@@ -694,6 +729,16 @@ function loadReviewSettings() {
     daily_new_problem_limit: sanitizeDailyNewProblemLimit(stored.daily_new_problem_limit),
     day_boundary_minutes: sanitizeDayBoundaryMinutes(stored.day_boundary_minutes),
     mature_interval_days: sanitizeMatureIntervalDays(stored.mature_interval_days),
+    simulator_enable_reddora: sanitizeBooleanSetting(stored.simulator_enable_reddora, DEFAULT_REVIEW_SETTINGS.simulator_enable_reddora),
+    simulator_enable_uradora: sanitizeBooleanSetting(stored.simulator_enable_uradora, DEFAULT_REVIEW_SETTINGS.simulator_enable_uradora),
+    simulator_enable_shanten_down: sanitizeBooleanSetting(stored.simulator_enable_shanten_down, DEFAULT_REVIEW_SETTINGS.simulator_enable_shanten_down),
+    simulator_enable_tegawari: sanitizeBooleanSetting(stored.simulator_enable_tegawari, DEFAULT_REVIEW_SETTINGS.simulator_enable_tegawari),
+    simulator_auto_disable_deep_search: sanitizeBooleanSetting(stored.simulator_auto_disable_deep_search, DEFAULT_REVIEW_SETTINGS.simulator_auto_disable_deep_search),
+    simulator_enable_riichi: sanitizeBooleanSetting(stored.simulator_enable_riichi, DEFAULT_REVIEW_SETTINGS.simulator_enable_riichi),
+    simulator_enable_calls: sanitizeBooleanSetting(stored.simulator_enable_calls, DEFAULT_REVIEW_SETTINGS.simulator_enable_calls),
+    simulator_enable_other_win_stop: sanitizeBooleanSetting(stored.simulator_enable_other_win_stop, DEFAULT_REVIEW_SETTINGS.simulator_enable_other_win_stop),
+    simulator_tsumo_win_share_percent: sanitizePercentSetting(stored.simulator_tsumo_win_share_percent, DEFAULT_REVIEW_SETTINGS.simulator_tsumo_win_share_percent),
+    simulator_other_win_hazard_percent: sanitizeOtherWinHazard(stored.simulator_other_win_hazard_percent),
   };
 }
 
@@ -740,19 +785,23 @@ function sanitizeBooleanSetting(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function sanitizePercentSetting(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(100, Math.max(0, parsed));
+}
+
+function sanitizeOtherWinHazard(value) {
+  const source = Array.isArray(value) ? value : DEFAULT_OTHER_WIN_HAZARD_PERCENT;
+  const result = DEFAULT_OTHER_WIN_HAZARD_PERCENT.map((fallback, index) =>
+    sanitizePercentSetting(source[index], fallback));
+  result[17] = result[16];
+  return result;
+}
+
 function saveReviewSettings(settings) {
-  localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify({
-    first_correct_days: sanitizeReviewSetting(settings.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
-    wrong_retry_days: sanitizeReviewSetting(settings.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
-    wrong_then_correct_days: sanitizeReviewSetting(settings.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
-    repeat_multiplier: sanitizeReviewSetting(settings.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
-    suspension_wrong_transitions: sanitizeSuspensionThreshold(settings.suspension_wrong_transitions),
-    quiz_random_transform: Boolean(settings.quiz_random_transform),
-    daily_new_problem_limit: sanitizeDailyNewProblemLimit(settings.daily_new_problem_limit),
-    day_boundary_minutes: sanitizeDayBoundaryMinutes(settings.day_boundary_minutes),
-    mature_interval_days: sanitizeMatureIntervalDays(settings.mature_interval_days),
-  }));
-  markSettingsDirty("復習設定を保存");
+  localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(sanitizeReviewSettings(settings)));
+  markSettingsDirty("設定を保存");
   repairReviewHistoryDueDates();
   reconcileSuspendedProblems({ notify: true });
   if (currentView === "manage") renderAdminProblems();
@@ -778,6 +827,61 @@ function renderReviewSettings() {
   });
   const randomTransform = $("quiz-random-transform");
   if (randomTransform) randomTransform.checked = settings.quiz_random_transform;
+  const simulatorCheckboxes = {
+    "simulator-enable-reddora": settings.simulator_enable_reddora,
+    "simulator-enable-uradora": settings.simulator_enable_uradora,
+    "simulator-enable-shanten-down": settings.simulator_enable_shanten_down,
+    "simulator-enable-tegawari": settings.simulator_enable_tegawari,
+    "simulator-auto-disable-deep-search": settings.simulator_auto_disable_deep_search,
+    "simulator-enable-riichi": settings.simulator_enable_riichi,
+    "simulator-enable-calls": settings.simulator_enable_calls,
+    "simulator-enable-other-win-stop": settings.simulator_enable_other_win_stop,
+  };
+  Object.entries(simulatorCheckboxes).forEach(([id, checked]) => {
+    const input = $(id);
+    if (input) input.checked = checked;
+  });
+  const tsumoShare = $("simulator-tsumo-win-share-percent");
+  if (tsumoShare) tsumoShare.value = String(settings.simulator_tsumo_win_share_percent);
+  const hazardGrid = $("simulator-other-win-hazard-grid");
+  if (hazardGrid) {
+    hazardGrid.innerHTML = Array.from({ length: 6 }, (_, row) =>
+      [row + 1, row + 7, row + 13].map((turn) => `
+        <td>${turn}</td><td><input data-hazard-turn="${turn}" type="number" min="0" max="100" step="0.01"
+          value="${Number(settings.simulator_other_win_hazard_percent[turn - 1]).toFixed(2)}"${turn === 18 ? " readonly" : ""}></td>
+      `).join("")
+    ).map((cells) => `<tr>${cells}</tr>`).join("");
+  }
+}
+
+function readReviewSettingsForm() {
+  const current = loadReviewSettings();
+  const hazards = [...current.simulator_other_win_hazard_percent];
+  document.querySelectorAll("#simulator-other-win-hazard-grid [data-hazard-turn]").forEach((input) => {
+    hazards[Number(input.dataset.hazardTurn) - 1] = input.value;
+  });
+  hazards[17] = hazards[16];
+  return {
+    first_correct_days: $("review-first-correct-days").value,
+    wrong_retry_days: $("review-wrong-retry-days").value,
+    wrong_then_correct_days: $("review-wrong-then-correct-days").value,
+    repeat_multiplier: $("review-repeat-multiplier").value,
+    suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
+    daily_new_problem_limit: $("review-daily-new-problem-limit").value,
+    day_boundary_minutes: parseDayBoundaryTime($("review-day-boundary-time").value),
+    mature_interval_days: $("review-mature-interval-days").value,
+    quiz_random_transform: $("quiz-random-transform").checked,
+    simulator_enable_reddora: $("simulator-enable-reddora").checked,
+    simulator_enable_uradora: $("simulator-enable-uradora").checked,
+    simulator_enable_shanten_down: $("simulator-enable-shanten-down").checked,
+    simulator_enable_tegawari: $("simulator-enable-tegawari").checked,
+    simulator_auto_disable_deep_search: $("simulator-auto-disable-deep-search").checked,
+    simulator_enable_riichi: $("simulator-enable-riichi").checked,
+    simulator_enable_calls: $("simulator-enable-calls").checked,
+    simulator_enable_other_win_stop: $("simulator-enable-other-win-stop").checked,
+    simulator_tsumo_win_share_percent: $("simulator-tsumo-win-share-percent").value,
+    simulator_other_win_hazard_percent: hazards,
+  };
 }
 
 function loadAdminCount() {
@@ -1507,22 +1611,31 @@ function bindExport() {
     "review-day-boundary-time",
     "review-mature-interval-days",
     "quiz-random-transform",
+    "simulator-enable-reddora",
+    "simulator-enable-uradora",
+    "simulator-enable-shanten-down",
+    "simulator-enable-tegawari",
+    "simulator-auto-disable-deep-search",
+    "simulator-enable-riichi",
+    "simulator-enable-calls",
+    "simulator-enable-other-win-stop",
+    "simulator-tsumo-win-share-percent",
   ].forEach((id) => {
     const input = $(id);
     if (!input) return;
     input.addEventListener("input", () => {
-      saveReviewSettings({
-        first_correct_days: $("review-first-correct-days").value,
-        wrong_retry_days: $("review-wrong-retry-days").value,
-        wrong_then_correct_days: $("review-wrong-then-correct-days").value,
-        repeat_multiplier: $("review-repeat-multiplier").value,
-        suspension_wrong_transitions: $("review-suspension-wrong-transitions").value,
-        daily_new_problem_limit: $("review-daily-new-problem-limit").value,
-        day_boundary_minutes: parseDayBoundaryTime($("review-day-boundary-time").value),
-        mature_interval_days: $("review-mature-interval-days").value,
-        quiz_random_transform: $("quiz-random-transform").checked,
-      });
+      saveReviewSettings(readReviewSettingsForm());
     });
+  });
+  const hazardGrid = $("simulator-other-win-hazard-grid");
+  if (hazardGrid) hazardGrid.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-hazard-turn]");
+    if (!input) return;
+    if (input.dataset.hazardTurn === "17") {
+      const turn18 = hazardGrid.querySelector('[data-hazard-turn="18"]');
+      if (turn18) turn18.value = input.value;
+    }
+    saveReviewSettings(readReviewSettingsForm());
   });
   if (promptDumpBtn) {
     promptDumpBtn.addEventListener("click", async () => {
@@ -1684,9 +1797,23 @@ async function runWasmVerification() {
 }
 
 async function analyzeWithWasm(handText, melds, payload) {
-  const requestKey = buildWasmRequestKey(handText, melds, payload);
-  const mode = wasmModeForRequest(requestKey);
-  const raw = await wasmAnalyze({
+  const settings = loadReviewSettings();
+  const requestedFlags = {
+    enable_shanten_down: settings.simulator_enable_shanten_down,
+    enable_tegawari: settings.simulator_enable_tegawari,
+  };
+  const requestKey = buildWasmRequestKey(handText, melds, payload, settings);
+  const mode = wasmModeForRequest(requestKey, requestedFlags);
+  const raw = await wasmAnalyze(buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey));
+  if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
+  if (raw.engine_version !== "0.9.10" || raw.api_version !== 1) {
+    throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
+  }
+  return summarizeWasmResult(raw, payload.turn);
+}
+
+function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey) {
+  return {
     __wasmRequestKey: requestKey,
     round_wind: tileIndex(payload.round_wind),
     seat_wind: tileIndex(payload.seat_wind),
@@ -1697,25 +1824,23 @@ async function analyzeWithWasm(handText, melds, payload) {
       tiles: meld.tiles.map(tileIndex),
     })),
     game_mode: 1,
-    enable_reddora: true,
-    enable_uradora: false,
+    enable_reddora: settings.simulator_enable_reddora,
+    enable_uradora: settings.simulator_enable_uradora,
     enable_shanten_down: mode.flags.enable_shanten_down,
     enable_tegawari: mode.flags.enable_tegawari,
-    auto_disable_deep_search: true,
-    enable_riichi: true,
-    enable_calls: false,
+    auto_disable_deep_search: settings.simulator_auto_disable_deep_search,
+    enable_riichi: settings.simulator_enable_riichi,
+    enable_calls: settings.simulator_enable_calls,
+    enable_other_win_stop: settings.simulator_enable_other_win_stop,
+    other_win_hazard: settings.simulator_other_win_hazard_percent.map((value) => value / 100),
     enable_turn_yaku: true,
     calc_stats: true,
-    calc_yaku_stats: false,
-    calc_shapley_stats: false,
-    ron_rate: 0,
+    calc_yaku_stats: true,
+    calc_shapley_stats: true,
+    ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
+    remaining_tiles: Math.min(70, Math.max(0, (18 - Math.min(18, Math.max(1, Number(payload.turn) || 1))) * 4)),
     version: "0.9.10",
-  });
-  if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
-  if (raw.engine_version !== "0.9.10" || raw.api_version !== 1) {
-    throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
-  }
-  return summarizeWasmResult(raw, payload.turn);
+  };
 }
 
 function calculateAnswerGaps(simulation, answers) {
@@ -1794,7 +1919,7 @@ function evaluateSimilarProblem(simulation, answers, sourceConditions) {
   };
 }
 
-function buildWasmRequestKey(handText, melds, payload) {
+function buildWasmRequestKey(handText, melds, payload, settings = loadReviewSettings()) {
   return JSON.stringify({
     hand: String(handText || ""),
     melds: (melds || []).map((meld) => meld.mpsz || tilesToMpszClient(meld.tiles || [])).join(" "),
@@ -1803,16 +1928,28 @@ function buildWasmRequestKey(handText, melds, payload) {
     seat_wind: payload?.seat_wind || "",
     dora: String(payload?.dora || ""),
     objective: Number(payload?.objective || 2),
+    simulator: {
+      enable_reddora: settings.simulator_enable_reddora,
+      enable_uradora: settings.simulator_enable_uradora,
+      enable_shanten_down: settings.simulator_enable_shanten_down,
+      enable_tegawari: settings.simulator_enable_tegawari,
+      auto_disable_deep_search: settings.simulator_auto_disable_deep_search,
+      enable_riichi: settings.simulator_enable_riichi,
+      enable_calls: settings.simulator_enable_calls,
+      enable_other_win_stop: settings.simulator_enable_other_win_stop,
+      tsumo_win_share_percent: settings.simulator_tsumo_win_share_percent,
+      other_win_hazard_percent: settings.simulator_other_win_hazard_percent,
+    },
   });
 }
 
-function wasmModeForRequest(requestKey) {
+function wasmModeForRequest(requestKey, requestedFlags = WASM_DEFAULT_FLAGS) {
   if (wasmActiveRequestKey !== requestKey) {
     wasmActiveRequestKey = requestKey;
     wasmActiveRequestMode = {
       degraded: false,
       fallbackReason: "",
-      flags: { ...WASM_DEFAULT_FLAGS },
+      flags: { ...requestedFlags },
     };
   }
   return wasmActiveRequestMode;
@@ -1925,17 +2062,68 @@ function summarizeWasmResult(raw, turn) {
     if (index < 34) return `${index - 26}z`;
     return `0${"mps"[index - 34]}`;
   };
-  const at = (values) => Number(values?.[Math.min(Math.max(1, turn), values.length - 1)] || 0);
-  const rows = (raw.stats || []).filter((stat) => stat.tile >= 0).map((stat) => ({
-    tile: code(stat.tile),
-    metric: at(stat.exp_score),
-    expected_score: at(stat.exp_score),
-    win_probability: at(stat.win_prob),
-    tenpai_probability: at(stat.tenpai_prob),
-    ukeire: (stat.necessary_tiles || []).reduce((sum, item) => sum + item.count, 0),
-    necessary_tiles: (stat.necessary_tiles || []).map((item) => ({ tile: code(item.tile), count: item.count })),
-    shanten: stat.shanten,
-  })).sort((a, b) => b.metric - a.metric);
+  const at = (values) => {
+    if (!Array.isArray(values) || !values.length) return 0;
+    return Number(values[Math.min(Math.max(1, turn), values.length - 1)] || 0);
+  };
+  const rows = (raw.stats || []).filter((stat) => stat.tile >= 0).map((stat) => {
+    const callProbability = at(stat.call_prob);
+    const yakuContributions = (stat.yaku_stats || []).map((entry) => {
+      const name = yakuName(entry.yaku);
+      return {
+        yaku: Number(entry.yaku),
+        name,
+        short_name: yakuShortName(entry.yaku, name),
+        occurrence: at(entry.occurrence_prob),
+        inclusive: at(entry.inclusive_score),
+        marginal: at(entry.marginal_score),
+        shapley: at(entry.shapley_score),
+      };
+    }).filter((entry) => entry.occurrence > 1e-12 || Math.abs(entry.inclusive) > 1e-9
+      || Math.abs(entry.marginal) > 1e-9 || Math.abs(entry.shapley) > 1e-9)
+      .sort((a, b) => b.shapley - a.shapley);
+    const calledYakuContributions = callProbability > 1e-12
+      ? (stat.yaku_stats || []).map((entry) => {
+        const name = yakuName(entry.yaku);
+        return {
+          yaku: Number(entry.yaku),
+          name,
+          short_name: yakuShortName(entry.yaku, name),
+          occurrence: at(entry.called_occurrence_prob) / callProbability,
+          shapley: at(entry.called_shapley_score) / callProbability,
+        };
+      }).filter((entry) => entry.occurrence > 1e-12 || Math.abs(entry.shapley) > 1e-9)
+        .sort((a, b) => b.shapley - a.shapley)
+      : [];
+    const callTileRates = callProbability > 1e-12
+      ? (stat.call_tile_stats || []).map((entry) => ({
+        tile: code(entry.tile),
+        probability: at(entry.probability),
+        conditional_probability: at(entry.probability) / callProbability,
+      })).filter((entry) => entry.probability > 1e-12)
+        .sort((a, b) => b.probability - a.probability)
+      : [];
+    const expectedScore = at(stat.exp_score);
+    const shapleyTotal = yakuContributions.reduce((sum, entry) => sum + entry.shapley, 0);
+    return {
+      tile: code(stat.tile),
+      metric: expectedScore,
+      expected_score: expectedScore,
+      win_probability: at(stat.win_prob),
+      tenpai_probability: at(stat.tenpai_prob),
+      call_probability: callProbability,
+      call_win_probability: at(stat.call_win_prob),
+      call_tile_rates: callTileRates,
+      yaku_contributions: yakuContributions,
+      called_yaku_contributions: calledYakuContributions,
+      yaku_chart_contributions: aggregateYakuContributions(yakuContributions),
+      shapley_total: shapleyTotal,
+      shapley_residual: expectedScore - shapleyTotal,
+      ukeire: (stat.necessary_tiles || []).reduce((sum, item) => sum + item.count, 0),
+      necessary_tiles: (stat.necessary_tiles || []).map((item) => ({ tile: code(item.tile), count: item.count })),
+      shanten: stat.shanten,
+    };
+  }).sort((a, b) => b.metric - a.metric);
   const best = rows[0]?.metric || 0;
   return {
     version: raw.engine_version,
@@ -1948,6 +2136,39 @@ function summarizeWasmResult(raw, turn) {
     time: raw.time,
     solver_mode: lastWasmMode,
   };
+}
+
+function yakuBitIndex(value) {
+  const numeric = Number(value);
+  const index = Math.log2(numeric);
+  return Number.isInteger(index) ? index : -1;
+}
+
+function yakuName(value) {
+  const index = yakuBitIndex(value);
+  return YAKU_NAMES[index] || `役 ${Number(value)}`;
+}
+
+function yakuShortName(value, name = yakuName(value)) {
+  const index = yakuBitIndex(value);
+  return YAKU_SHORT_NAMES[index] || Array.from(String(name || "役")).slice(0, 2).join("");
+}
+
+function aggregateYakuContributions(entries, limit = 5) {
+  const ranked = (entries || []).filter((entry) => Number(entry.shapley) > 1e-9)
+    .slice().sort((a, b) => Number(b.shapley) - Number(a.shapley));
+  const visible = ranked.slice(0, limit);
+  const hidden = ranked.slice(limit);
+  if (!hidden.length) return visible;
+  return [...visible, {
+    yaku: null,
+    name: "その他",
+    short_name: "他",
+    inclusive: hidden.reduce((sum, entry) => sum + Number(entry.inclusive || 0), 0),
+    marginal: hidden.reduce((sum, entry) => sum + Number(entry.marginal || 0), 0),
+    shapley: hidden.reduce((sum, entry) => sum + Number(entry.shapley || 0), 0),
+    count: hidden.length,
+  }];
 }
 
 function tileIndex(tile) {
@@ -2915,17 +3136,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
     localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     if (settingsRecord) {
-      const safeSettings = {
-        first_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
-        wrong_retry_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
-        wrong_then_correct_days: sanitizeReviewSetting(settingsRecord.reviewSettings?.wrong_then_correct_days, DEFAULT_REVIEW_SETTINGS.wrong_then_correct_days),
-        repeat_multiplier: sanitizeReviewSetting(settingsRecord.reviewSettings?.repeat_multiplier, DEFAULT_REVIEW_SETTINGS.repeat_multiplier),
-        suspension_wrong_transitions: sanitizeSuspensionThreshold(settingsRecord.reviewSettings?.suspension_wrong_transitions),
-        quiz_random_transform: sanitizeBooleanSetting(settingsRecord.reviewSettings?.quiz_random_transform, DEFAULT_REVIEW_SETTINGS.quiz_random_transform),
-        daily_new_problem_limit: sanitizeDailyNewProblemLimit(settingsRecord.reviewSettings?.daily_new_problem_limit),
-        day_boundary_minutes: sanitizeDayBoundaryMinutes(settingsRecord.reviewSettings?.day_boundary_minutes),
-        mature_interval_days: sanitizeMatureIntervalDays(settingsRecord.reviewSettings?.mature_interval_days),
-      };
+      const safeSettings = sanitizeReviewSettings(settingsRecord.reviewSettings || {});
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
       localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(safeSettings));
       localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(settingsRecord.adminCount) || DEFAULT_ADMIN_COUNT))));
@@ -3170,6 +3381,7 @@ function transformSimulatorForQuiz(simulator, spec) {
       ...row,
       tile: transformTile(row.tile),
       necessary_tiles: (row.necessary_tiles || []).map((item) => ({ ...item, tile: transformTile(item.tile) })),
+      call_tile_rates: (row.call_tile_rates || []).map((item) => ({ ...item, tile: transformTile(item.tile) })),
     })),
   };
 }
@@ -3427,6 +3639,8 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
   if (!container || !simulation?.rows?.length) return;
   const rows = simulation.rows;
   const best = rows[0].metric;
+  const commonShapleyScale = Math.max(1, ...rows.map((row) => Math.max(0,
+    Number(row.shapley_total ?? (row.yaku_contributions || []).reduce((sum, entry) => sum + Number(entry.shapley || 0), 0)))));
   container.classList.remove("hidden");
   container.innerHTML = `
     <div class="simulator-heading">
@@ -3434,7 +3648,7 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
         <span class="eyebrow">何切るシミュレーター結果</span>
         <h3>何切るシミュレーター結果</h3>
       </div>
-      <span>${simulation.turn}局目・${simulation.shanten?.all ?? "-"}シャンテン</span>
+      <span>${simulation.turn}巡目・${simulation.shanten?.all ?? "-"}シャンテン</span>
     </div>
     ${simulation.solver_mode?.degraded ? `<p class="sim-warning">この結果は、シャンテン戻し・手替わりを無効化した状態で計算しています。</p>` : ""}
     <div class="sim-table-wrap">
@@ -3445,7 +3659,9 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
             <th>必要牌</th>
             <th>聴牌率</th>
             <th>和了率</th>
+            <th>副露和了率</th>
             <th>期待値</th>
+            <th>役別Shapley<br><small>共通上限 ${formatNumber(commonShapleyScale)}点</small></th>
           </tr>
         </thead>
         <tbody>
@@ -3461,14 +3677,71 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
               <td>${renderNecessaryTiles(row)}</td>
               <td>${formatProbability(row.tenpai_probability)}</td>
               <td>${formatProbability(row.win_probability)}</td>
+              <td>${formatProbability(row.call_win_probability)}</td>
               <td><b>${formatNumber(row.expected_score)}</b><small class="relative-score">${relative.toFixed(2)}%</small></td>
+              <td class="shapley-cell">${renderYakuContributions(row, commonShapleyScale)}</td>
             </tr>`;
           }).join("")}
         </tbody>
       </table>
     </div>
-    <p class="sim-legend">上棒が最良手、強調表示が指定解答です。必要牌は牌画像で表示します。</p>
+    <p class="sim-legend">上段が最良手、強調表示が指定解答です。役別グラフは全打牌で同じ点数スケールです。</p>
   `;
+}
+
+function yakuColor(entry) {
+  if (entry?.yaku == null) return "#687386";
+  let hash = 2166136261;
+  for (const character of String(entry.yaku)) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
+  }
+  return `hsl(${hash % 360} 58% 48%)`;
+}
+
+function renderYakuContributions(row, commonScale) {
+  const entries = row.yaku_contributions || [];
+  if (!entries.length) return '<span class="shapley-empty">役別データなし</span>';
+  const chartEntries = row.yaku_chart_contributions || aggregateYakuContributions(entries);
+  const segments = chartEntries.map((entry) => {
+    const width = Math.max(0, Number(entry.shapley || 0)) / commonScale * 100;
+    const suffix = entry.count ? `（${entry.count}役）` : "";
+    return `<span class="shapley-segment" data-yaku="${entry.yaku ?? "other"}"
+      style="width:${width.toFixed(4)}%;background:${yakuColor(entry)}"
+      title="${escapeHtml(entry.name)}${suffix}: ${formatNumber(entry.shapley)}点">${escapeHtml(entry.short_name || yakuShortName(entry.yaku, entry.name))}</span>`;
+  }).join("");
+  const detailRows = entries.map((entry) => `
+    <tr><td>${escapeHtml(entry.name)}</td><td>${formatProbability(entry.occurrence)}</td><td>${formatNumber(entry.shapley)}</td></tr>
+  `).join("");
+  const shapleyTotal = Number(row.shapley_total ?? entries.reduce((sum, entry) => sum + Number(entry.shapley || 0), 0));
+  const residual = Number(row.shapley_residual ?? Number(row.expected_score || 0) - shapleyTotal);
+  const callDetails = renderCallContributions(row);
+  return `<div class="shapley-track" aria-label="役別Shapley。共通上限${commonScale.toFixed(1)}点">${segments}</div>
+    <details class="shapley-details"><summary>詳細</summary>
+      <table class="shapley-detail-table">
+        <thead><tr><th>役</th><th>出現率</th><th>Shapley</th></tr></thead>
+        <tbody>${detailRows}</tbody>
+        <tfoot><tr><th>合計</th><td>期待値 ${formatNumber(row.expected_score)}</td><td>${formatNumber(shapleyTotal)}</td></tr>
+          <tr><th>残差</th><td colspan="2">${residual.toFixed(4)}</td></tr></tfoot>
+      </table>${callDetails}
+    </details>`;
+}
+
+function renderCallContributions(row) {
+  if (Number(row.call_probability || 0) <= 1e-12) return "";
+  const calledRows = (row.called_yaku_contributions || []).map((entry) => `
+    <tr><td>${escapeHtml(entry.name)}</td><td>${formatProbability(entry.occurrence)}</td><td>${formatNumber(entry.shapley)}</td></tr>
+  `).join("");
+  const callTiles = (row.call_tile_rates || []).map((entry) => `
+    <span class="call-tile-rate">${tileImage(entry.tile)}<small>全体 ${formatProbability(entry.probability)}<br>副露時 ${formatProbability(entry.conditional_probability)}</small></span>
+  `).join("");
+  return `<section class="call-contributions">
+    <h4>副露時の内訳 <small>副露発生 ${formatProbability(row.call_probability)}</small></h4>
+    <div class="call-tile-rates">${callTiles || '<span class="shapley-empty">鳴いた牌の内訳なし</span>'}</div>
+    <table class="shapley-detail-table">
+      <thead><tr><th>役</th><th>副露時の出現率</th><th>副露時Shapley</th></tr></thead>
+      <tbody>${calledRows || '<tr><td colspan="3">該当役なし</td></tr>'}</tbody>
+    </table>
+  </section>`;
 }
 
 function renderNecessaryTiles(row) {
