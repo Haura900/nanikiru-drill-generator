@@ -539,6 +539,30 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
   expect(result.row.call_probability).toBeCloseTo(0.2, 10);
 });
 
+test("WASM fallback preserves shanten-down before disabling both search options", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const mode = {
+      degraded: false,
+      requestedFlags: { enable_shanten_down: true, enable_tegawari: true },
+      flags: { enable_shanten_down: true, enable_tegawari: true },
+    };
+    const first = nextWasmFallbackFlags(mode);
+    mode.degraded = true;
+    mode.flags = first;
+    const warning = wasmFallbackWarning(mode);
+    const second = nextWasmFallbackFlags(mode);
+    mode.flags = second;
+    const third = nextWasmFallbackFlags(mode);
+    return { first, warning, second, third };
+  });
+
+  expect(result.first).toEqual({ enable_shanten_down: true, enable_tegawari: false });
+  expect(result.warning).toContain("手替わりだけを無効化");
+  expect(result.second).toEqual({ enable_shanten_down: false, enable_tegawari: true });
+  expect(result.third).toEqual({ enable_shanten_down: false, enable_tegawari: false });
+});
+
 test("legacy simulator results and changed settings trigger a lazy statistics refresh", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => {
