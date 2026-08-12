@@ -580,15 +580,25 @@ test("simulator table shows stable-color Shapley bars and called-hand details", 
       },
     ];
     rows.forEach((row) => { row.yaku_chart_contributions = aggregateYakuContributions(row.yaku_contributions); });
-    renderSimulatorTable(document.getElementById("quiz-simulator-result"), {
+    const host = document.createElement("div");
+    host.id = "shapley-chart-test-host";
+    document.body.append(host);
+    renderSimulatorTable(host, {
       turn: 6, shanten: { all: 1 }, rows,
     }, ["1m"], "1m");
   });
   await expect(page.locator(".shapley-track")).toHaveCount(2);
   const riichiSegments = page.locator('.shapley-segment[data-yaku="2"]');
   await expect(riichiSegments).toHaveCount(2);
-  const colors = await riichiSegments.evaluateAll((segments) => segments.map((segment) => segment.style.background));
-  expect(colors[0]).toBe(colors[1]);
+  const chartStyles = await riichiSegments.evaluateAll((segments) => segments.map((segment) => ({
+    color: getComputedStyle(segment).backgroundColor,
+    width: segment.getBoundingClientRect().width,
+  })));
+  expect(chartStyles[0].color).toBe(chartStyles[1].color);
+  expect(chartStyles[0].color).not.toBe("rgba(0, 0, 0, 0)");
+  expect(chartStyles[0].width).toBeGreaterThan(chartStyles[1].width);
+  expect(chartStyles[1].width).toBeGreaterThan(1);
+  await expect(page.locator(".shapley-track").first()).toHaveCSS("background-color", "rgb(13, 18, 25)");
   await expect(page.locator(".sim-table > thead")).toContainText("副露和了率");
   await page.locator(".shapley-details").first().evaluate((details) => { details.open = true; });
   await expect(page.locator(".shapley-details").first()).toContainText("副露発生 8.00%");

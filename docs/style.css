@@ -212,8 +212,8 @@ button.danger { color: var(--red); }
 .sim-refresh-status.busy { color: #355348; background: #edf3ef; }
 .sim-refresh-status.error { color: var(--red); background: #f7e5e2; }
 .shapley-cell { vertical-align: top; }
-.shapley-track { display: flex; width: 100%; height: 23px; overflow: hidden; border-radius: 4px; background: #e7e9e8; }
-.shapley-segment { display: flex; align-items: center; justify-content: center; min-width: 1px; height: 100%; overflow: hidden; border-right: 1px solid #fff8; color: white; font-size: 10px; font-weight: 900; line-height: 1; white-space: nowrap; text-shadow: 0 1px 2px #000b; }
+.shapley-track { display: flex; width: 100%; min-width: 190px; height: 21px; overflow: hidden; border-radius: 3px; background: #0d1219; }
+.shapley-segment { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; min-width: 1px; height: 100%; overflow: hidden; border-right: 1px solid #0d1219; color: #fff; font-size: 10px; font-weight: 800; line-height: 1; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.8); }
 .shapley-empty { color: var(--muted); font-size: 11px; }
 .shapley-details { margin-top: 5px; }
 .shapley-details summary { color: var(--green); font-size: 11px; font-weight: 800; cursor: pointer; }
