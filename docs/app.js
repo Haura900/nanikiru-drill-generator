@@ -57,7 +57,7 @@ let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
-const WASM_ASSET_VERSION = "engine-v0.9.12";
+const WASM_ASSET_VERSION = "engine-v0.9.13";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 const WASM_DEFAULT_FLAGS = Object.freeze({
@@ -1812,7 +1812,7 @@ async function analyzeWithWasm(handText, melds, payload) {
   const mode = wasmModeForRequest(requestKey, requestedFlags);
   const raw = await wasmAnalyze(buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey));
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
-  if (raw.engine_version !== "0.9.12" || raw.api_version !== 1) {
+  if (raw.engine_version !== "0.9.13" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
   const simulation = summarizeWasmResult(raw, payload.turn);
@@ -1900,7 +1900,7 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     calc_shapley_stats: true,
     ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
     remaining_tiles: Math.min(70, Math.max(0, (18 - Math.min(18, Math.max(1, Number(payload.turn) || 1))) * 4)),
-    version: "0.9.12",
+    version: "0.9.13",
   };
 }
 

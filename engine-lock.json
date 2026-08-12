@@ -1,9 +1,9 @@
 {
   "repository": "Haura900/mahjong-cpp",
-  "tag": "engine-v0.9.12",
-  "version": "0.9.12",
+  "tag": "engine-v0.9.13",
+  "version": "0.9.13",
   "apiVersion": 1,
-  "commit": "04215649bdab635bb74a4e3d232e285172aaf254",
+  "commit": "e1ad6449c840f4d8181e7a7b8e0af3cbb57e4649",
   "asset": "nanikiru-engine-wasm.zip",
-  "sha256": "a4e616ed577b93af1143e4eb899a13bb5c3ec15d5cff9e4c5b5941311f4d8145"
+  "sha256": "bb3fc0cf8342837e3ffabe2edf1aa7d7aeddf65cb1a26e5e70cb1e4ee31629da"
 }
