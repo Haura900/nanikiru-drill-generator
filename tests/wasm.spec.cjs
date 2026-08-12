@@ -43,7 +43,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         calc_yaku_stats: false,
         calc_shapley_stats: false,
         ron_rate: 0,
-        version: "0.9.11",
+        version: "0.9.12",
       },
     });
   }));
@@ -54,6 +54,50 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
   expect(ranked[1].tile).toBe(16);
   expect(ranked[0].exp_score[6]).toBeCloseTo(1506.9471, 3);
   expect(cspViolations).toEqual([]);
+});
+
+test("large tegawari graph completes without exhausting the WASM call stack", async ({ page }) => {
+  test.setTimeout(180000);
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => new Promise((resolve, reject) => {
+    const worker = new Worker("wasm/worker.js", { type: "module" });
+    const timer = setTimeout(() => reject(new Error("WASM worker timeout")), 170000);
+    worker.onmessage = (event) => {
+      clearTimeout(timer);
+      worker.terminate();
+      event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result);
+    };
+    worker.onerror = (event) => reject(new Error(event.message));
+    worker.postMessage({
+      id: 1,
+      payload: {
+        game_mode: 1,
+        round_wind: 27,
+        seat_wind: 28,
+        dora_indicators: [],
+        hand: [2, 3, 6, 6, 7, 8, 13, 16, 22, 27, 31, 32, 33, 33],
+        melds: [],
+        enable_reddora: true,
+        enable_uradora: true,
+        enable_shanten_down: true,
+        enable_tegawari: true,
+        auto_disable_deep_search: false,
+        enable_riichi: true,
+        enable_calls: false,
+        enable_turn_yaku: true,
+        calc_stats: true,
+        calc_yaku_stats: false,
+        calc_shapley_stats: false,
+        ron_rate: 0.7,
+        remaining_tiles: 70,
+        version: "0.9.12",
+      },
+    });
+  }));
+
+  expect(result.success).toBe(true);
+  expect(result.searched).toBe(6698142);
+  expect(result.stats).toHaveLength(12);
 });
 
 test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) => {
@@ -92,7 +136,7 @@ test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) 
         calc_shapley_stats: true,
         ron_rate: 0.7,
         remaining_tiles: 48,
-        version: "0.9.11",
+        version: "0.9.12",
       },
     });
   }));
@@ -125,7 +169,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       calc_yaku_stats: false,
       calc_shapley_stats: false,
       ron_rate: 0,
-      version: "0.9.11",
+      version: "0.9.12",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;
