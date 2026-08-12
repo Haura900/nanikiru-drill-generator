@@ -3743,15 +3743,25 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
     </div>
     <p class="sim-legend">上段が最良手、強調表示が指定解答です。役別グラフは全打牌で同じ点数スケールです。</p>
   `;
+  applyShapleyChartStyles(container);
 }
 
 function yakuColor(entry) {
-  if (entry?.yaku == null) return "#687386";
+  if (entry?.yaku == null || entry?.isOther || entry?.name === "その他") return "#687386";
   let hash = 2166136261;
-  for (const character of String(entry.yaku)) {
+  for (const character of String(entry?.yaku ?? "unknown")) {
     hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
   }
-  return `hsl(${hash % 360} 58% 48%)`;
+  return `hsl(${hash % 360} 62% 55%)`;
+}
+
+function applyShapleyChartStyles(container) {
+  container.querySelectorAll(".shapley-segment[data-shapley-width]").forEach((segment) => {
+    const parsedWidth = Number(segment.dataset.shapleyWidth);
+    const width = Number.isFinite(parsedWidth) ? Math.min(100, Math.max(0, parsedWidth)) : 0;
+    segment.style.width = `${width}%`;
+    segment.style.backgroundColor = segment.dataset.shapleyColor || "#687386";
+  });
 }
 
 function renderYakuContributions(row, commonScale) {
@@ -3762,7 +3772,7 @@ function renderYakuContributions(row, commonScale) {
     const width = Math.max(0, Number(entry.shapley || 0)) / commonScale * 100;
     const suffix = entry.count ? `（${entry.count}役）` : "";
     return `<span class="shapley-segment" data-yaku="${entry.yaku ?? "other"}"
-      style="width:${width.toFixed(4)}%;background:${yakuColor(entry)}"
+      data-shapley-width="${width.toFixed(4)}" data-shapley-color="${yakuColor(entry)}"
       title="${escapeHtml(entry.name)}${suffix}: ${formatNumber(entry.shapley)}点">${escapeHtml(entry.short_name || yakuShortName(entry.yaku, entry.name))}</span>`;
   }).join("");
   const detailRows = entries.map((entry) => `
