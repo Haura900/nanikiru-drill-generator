@@ -208,6 +208,9 @@ button.danger { color: var(--red); }
 .effective-tile img { width: 25px; border-radius: 2px; box-shadow: 0 1px 2px #0002; }
 .effective-tile small { position: absolute; right: -2px; bottom: -3px; min-width: 13px; border-radius: 7px; background: var(--green); color: white; text-align: center; font-size: 8px; line-height: 13px; }
 .sim-legend { color: var(--muted); font-size: 12px; margin: 9px 0 0; }
+.sim-refresh-status { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+.sim-refresh-status.busy { color: #355348; background: #edf3ef; }
+.sim-refresh-status.error { color: var(--red); background: #f7e5e2; }
 .shapley-cell { vertical-align: top; }
 .shapley-track { display: flex; width: 100%; height: 23px; overflow: hidden; border-radius: 4px; background: #e7e9e8; }
 .shapley-segment { display: flex; align-items: center; justify-content: center; min-width: 1px; height: 100%; overflow: hidden; border-right: 1px solid #fff8; color: white; font-size: 10px; font-weight: 900; line-height: 1; white-space: nowrap; text-shadow: 0 1px 2px #000b; }

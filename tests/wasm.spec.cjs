@@ -539,6 +539,24 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
   expect(result.row.call_probability).toBeCloseTo(0.2, 10);
 });
 
+test("legacy simulator results and changed settings trigger a lazy statistics refresh", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const settings = loadReviewSettings();
+    const signature = simulatorSettingsSignature(settings);
+    const row = { tile: "1m", metric: 1000, yaku_contributions: [] };
+    return {
+      legacy: simulatorStatsNeedRefresh({ rows: [{ tile: "1m", metric: 1000 }] }, settings),
+      current: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, settings),
+      changed: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, {
+        ...settings,
+        simulator_enable_calls: !settings.simulator_enable_calls,
+      }),
+    };
+  });
+  expect(result).toEqual({ legacy: true, current: false, changed: true });
+});
+
 test("simulator table shows stable-color Shapley bars and called-hand details", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => {

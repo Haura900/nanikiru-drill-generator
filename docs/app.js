@@ -495,6 +495,7 @@ function answerQuestion(tile, clickedButton) {
     answers,
     tile
   );
+  refreshQuizSimulatorStats(presentedProblem, answers, tile);
   renderGenreQuizTable();
   if (recorded.suspendedNow) {
     alert(`この問題は「正解後の不正解」が${recorded.suspensionThreshold}回に達したため休止しました。\n問題一覧から休止を解除できます。`);
@@ -1809,7 +1810,62 @@ async function analyzeWithWasm(handText, melds, payload) {
   if (raw.engine_version !== "0.9.10" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
-  return summarizeWasmResult(raw, payload.turn);
+  const simulation = summarizeWasmResult(raw, payload.turn);
+  simulation.settings_signature = simulatorSettingsSignature(settings);
+  return simulation;
+}
+
+function simulatorSettingsSignature(settings = loadReviewSettings()) {
+  return JSON.stringify({
+    enable_reddora: settings.simulator_enable_reddora,
+    enable_uradora: settings.simulator_enable_uradora,
+    enable_shanten_down: settings.simulator_enable_shanten_down,
+    enable_tegawari: settings.simulator_enable_tegawari,
+    auto_disable_deep_search: settings.simulator_auto_disable_deep_search,
+    enable_riichi: settings.simulator_enable_riichi,
+    enable_calls: settings.simulator_enable_calls,
+    enable_other_win_stop: settings.simulator_enable_other_win_stop,
+    tsumo_win_share_percent: settings.simulator_tsumo_win_share_percent,
+    other_win_hazard_percent: settings.simulator_other_win_hazard_percent,
+  });
+}
+
+function simulatorStatsNeedRefresh(simulation, settings = loadReviewSettings()) {
+  if (!simulation?.rows?.length) return true;
+  if (simulation.settings_signature !== simulatorSettingsSignature(settings)) return true;
+  return simulation.rows.some((row) => !Array.isArray(row.yaku_contributions));
+}
+
+async function refreshQuizSimulatorStats(presentedProblem, answers, selectedTile) {
+  if (!simulatorStatsNeedRefresh(presentedProblem?.simulator)) return;
+  const container = $("quiz-simulator-result");
+  if (!container) return;
+  const problemId = presentedProblem.id;
+  const notice = document.createElement("p");
+  notice.className = "sim-refresh-status busy";
+  notice.textContent = "現在の設定で役別Shapley・副露結果を計算しています。";
+  container.prepend(notice);
+  try {
+    const simulation = await analyzeWithWasm(
+      presentedProblem.hand,
+      presentedProblem.melds || [],
+      problemPayload(presentedProblem)
+    );
+    presentedProblem.simulator = simulation;
+    if (!presentedProblem.quiz_transform) {
+      const storedProblem = problems.find((problem) => problem.id === problemId);
+      if (storedProblem) {
+        storedProblem.simulator = simulation;
+        await saveProblems({ changedIds: [problemId] });
+      }
+    }
+    if (currentProblem?.id === problemId && currentPresentedProblem === presentedProblem) {
+      renderSimulatorTable(container, simulation, answers, selectedTile);
+    }
+  } catch (error) {
+    notice.className = "sim-refresh-status error";
+    notice.textContent = `役別Shapley・副露結果を更新できませんでした: ${error.message || error}`;
+  }
 }
 
 function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey) {
