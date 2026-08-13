@@ -356,6 +356,7 @@
             <label><input id="simulator-enable-calls" type="checkbox"> 副露（1回先・シャンテンが進む鳴き）</label>
             <label><input id="simulator-auto-disable-deep-search" type="checkbox"> 4シャンテン以上でシャンテン戻し・手替わりを自動OFF</label>
             <label><input id="simulator-enable-other-win-stop" type="checkbox"> 他家の和了で計算を打ち切る</label>
+            <label><input id="simulator-fast-similar-generation" type="checkbox"> 類題生成を高速化（オンライン多段探索・役別詳細は表示時に補完）</label>
           </div>
           <label class="simulator-rate-setting">和了のうちツモの割合（%）
             <input id="simulator-tsumo-win-share-percent" type="number" min="0" max="100" step="1">
@@ -462,9 +463,9 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260813-1"></script>
-  <script type="module" src="firebase-sync.js?v=20260813-1"></script>
-  <script src="net-mature-core.js?v=20260813-1"></script>
-  <script src="app.js?v=20260813-1"></script>
+  <script src="version.js?v=20260813-3"></script>
+  <script type="module" src="firebase-sync.js?v=20260813-2"></script>
+  <script src="net-mature-core.js?v=20260813-2"></script>
+  <script src="app.js?v=20260813-3"></script>
 </body>
 </html>
