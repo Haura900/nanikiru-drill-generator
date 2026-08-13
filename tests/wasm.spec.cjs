@@ -493,6 +493,7 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   await expect(page.locator("#quiz-random-transform")).not.toBeChecked();
   await expect(page.locator("#simulator-enable-calls")).toBeChecked();
   await expect(page.locator("#simulator-enable-uradora")).toBeChecked();
+  await expect(page.locator("#simulator-fast-similar-generation")).toBeChecked();
   await expect(page.locator("#simulator-tsumo-win-share-percent")).toHaveValue("30");
   await page.locator("#review-suspension-wrong-transitions").fill("12");
   await page.locator("#review-daily-new-problem-limit").fill("15");
@@ -500,6 +501,7 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   await page.locator("#review-mature-interval-days").fill("35");
   await page.locator("#quiz-random-transform").check();
   await page.locator("#simulator-enable-calls").uncheck();
+  await page.locator("#simulator-fast-similar-generation").uncheck();
   await page.locator("#simulator-tsumo-win-share-percent").fill("42");
   await page.locator(".hazard-settings").evaluate((details) => { details.open = true; });
   await page.locator("#simulator-other-win-hazard-grid [data-hazard-turn='10']").fill("8.25");
@@ -510,6 +512,7 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   expect(stored.mature_interval_days).toBe(35);
   expect(stored.quiz_random_transform).toBe(true);
   expect(stored.simulator_enable_calls).toBe(false);
+  expect(stored.simulator_fast_similar_generation).toBe(false);
   expect(stored.simulator_tsumo_win_share_percent).toBe(42);
   expect(stored.simulator_other_win_hazard_percent[9]).toBe(8.25);
   const savedSettings = await page.evaluate(() => ({
@@ -518,6 +521,7 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   }));
   expect(savedSettings.backup.simulator_tsumo_win_share_percent).toBe(42);
   expect(savedSettings.cloud.simulator_enable_calls).toBe(false);
+  expect(savedSettings.backup.simulator_fast_similar_generation).toBe(false);
   await page.reload();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("12");
@@ -526,6 +530,7 @@ test("data settings persist the suspension threshold, daily new limit, day bound
   await expect(page.locator("#review-mature-interval-days")).toHaveValue("35");
   await expect(page.locator("#quiz-random-transform")).toBeChecked();
   await expect(page.locator("#simulator-enable-calls")).not.toBeChecked();
+  await expect(page.locator("#simulator-fast-similar-generation")).not.toBeChecked();
   await expect(page.locator("#simulator-tsumo-win-share-percent")).toHaveValue("42");
   await expect(page.locator("#simulator-other-win-hazard-grid [data-hazard-turn='10']")).toHaveValue("8.25");
 });
@@ -570,6 +575,7 @@ test("legacy cloud settings load with defaults for newly added settings", async 
     simulator_enable_riichi: true,
     simulator_enable_calls: true,
     simulator_enable_other_win_stop: true,
+    simulator_fast_similar_generation: true,
     simulator_tsumo_win_share_percent: 30,
     simulator_other_win_hazard_percent: [
       0.02, 0.08, 0.29, 0.78, 1.70, 3.05, 4.67, 6.44, 8.23,
@@ -600,6 +606,7 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
     const scene = { turn: 6, round_wind: "1z", seat_wind: "2z", dora: "", objective: 2 };
     const mode = { flags: { enable_shanten_down: false, enable_tegawari: true } };
     const captured = buildSimulatorEnginePayload("123m123p123s11122z", [], scene, settings, mode, "test");
+    const lightweight = buildSimulatorEnginePayload("123m123p123s11122z", [], scene, settings, mode, "test", false);
     const probabilities = Array(19).fill(0);
     probabilities[6] = 0.2;
     const scores = Array(19).fill(0);
@@ -615,7 +622,7 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
         }],
       }],
     }, 6);
-    return { captured, row: simulation.rows[0] };
+    return { captured, lightweight, row: simulation.rows[0] };
   });
   expect(result.captured.enable_reddora).toBe(false);
   expect(result.captured.enable_uradora).toBe(true);
@@ -623,6 +630,9 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
   expect(result.captured.enable_other_win_stop).toBe(true);
   expect(result.captured.calc_yaku_stats).toBe(true);
   expect(result.captured.calc_shapley_stats).toBe(true);
+  expect(result.captured.t_min).toBe(6);
+  expect(result.lightweight.calc_yaku_stats).toBe(false);
+  expect(result.lightweight.calc_shapley_stats).toBe(false);
   expect(result.captured.ron_rate).toBeCloseTo(0.65, 10);
   expect(result.captured.remaining_tiles).toBe(48);
   expect(result.captured.other_win_hazard[0]).toBeCloseTo(0.05, 10);
@@ -663,13 +673,14 @@ test("legacy simulator results and changed settings trigger a lazy statistics re
     return {
       legacy: simulatorStatsNeedRefresh({ rows: [{ tile: "1m", metric: 1000 }] }, settings),
       current: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, settings),
+      deferred: simulatorStatsNeedRefresh({ details_complete: false, settings_signature: signature, rows: [row] }, settings),
       changed: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, {
         ...settings,
         simulator_enable_calls: !settings.simulator_enable_calls,
       }),
     };
   });
-  expect(result).toEqual({ legacy: true, current: false, changed: true });
+  expect(result).toEqual({ legacy: true, current: false, deferred: true, changed: true });
 });
 
 test("simulator table shows stable-color Shapley bars and called-hand details", async ({ page }) => {

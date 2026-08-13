@@ -42,6 +42,7 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   simulator_enable_riichi: true,
   simulator_enable_calls: true,
   simulator_enable_other_win_stop: true,
+  simulator_fast_similar_generation: true,
   simulator_tsumo_win_share_percent: 30,
   simulator_other_win_hazard_percent: DEFAULT_OTHER_WIN_HAZARD_PERCENT,
 });
@@ -57,6 +58,9 @@ let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
 const wasmRequests = new Map();
+const wasmResultMemo = new Map();
+const simulatorDetailRefreshes = new Map();
+const WASM_RESULT_MEMO_LIMIT = 24;
 const WASM_ASSET_VERSION = "engine-v0.9.13";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
@@ -743,6 +747,7 @@ function sanitizeReviewSettings(stored = {}) {
     simulator_enable_riichi: sanitizeBooleanSetting(stored.simulator_enable_riichi, DEFAULT_REVIEW_SETTINGS.simulator_enable_riichi),
     simulator_enable_calls: sanitizeBooleanSetting(stored.simulator_enable_calls, DEFAULT_REVIEW_SETTINGS.simulator_enable_calls),
     simulator_enable_other_win_stop: sanitizeBooleanSetting(stored.simulator_enable_other_win_stop, DEFAULT_REVIEW_SETTINGS.simulator_enable_other_win_stop),
+    simulator_fast_similar_generation: sanitizeBooleanSetting(stored.simulator_fast_similar_generation, DEFAULT_REVIEW_SETTINGS.simulator_fast_similar_generation),
     simulator_tsumo_win_share_percent: sanitizePercentSetting(stored.simulator_tsumo_win_share_percent, DEFAULT_REVIEW_SETTINGS.simulator_tsumo_win_share_percent),
     simulator_other_win_hazard_percent: sanitizeOtherWinHazard(stored.simulator_other_win_hazard_percent),
   };
@@ -842,6 +847,7 @@ function renderReviewSettings() {
     "simulator-enable-riichi": settings.simulator_enable_riichi,
     "simulator-enable-calls": settings.simulator_enable_calls,
     "simulator-enable-other-win-stop": settings.simulator_enable_other_win_stop,
+    "simulator-fast-similar-generation": settings.simulator_fast_similar_generation,
   };
   Object.entries(simulatorCheckboxes).forEach(([id, checked]) => {
     const input = $(id);
@@ -885,6 +891,7 @@ function readReviewSettingsForm() {
     simulator_enable_riichi: $("simulator-enable-riichi").checked,
     simulator_enable_calls: $("simulator-enable-calls").checked,
     simulator_enable_other_win_stop: $("simulator-enable-other-win-stop").checked,
+    simulator_fast_similar_generation: $("simulator-fast-similar-generation").checked,
     simulator_tsumo_win_share_percent: $("simulator-tsumo-win-share-percent").value,
     simulator_other_win_hazard_percent: hazards,
   };
@@ -1625,6 +1632,7 @@ function bindExport() {
     "simulator-enable-riichi",
     "simulator-enable-calls",
     "simulator-enable-other-win-stop",
+    "simulator-fast-similar-generation",
     "simulator-tsumo-win-share-percent",
   ].forEach((id) => {
     const input = $(id);
@@ -1802,21 +1810,49 @@ async function runWasmVerification() {
   };
 }
 
-async function analyzeWithWasm(handText, melds, payload) {
+function getMemoizedWasmResult(key) {
+  const value = wasmResultMemo.get(key);
+  if (!value) return null;
+  wasmResultMemo.delete(key);
+  wasmResultMemo.set(key, value);
+  return structuredClone(value);
+}
+
+function memoizeWasmResult(key, value) {
+  wasmResultMemo.delete(key);
+  wasmResultMemo.set(key, structuredClone(value));
+  while (wasmResultMemo.size > WASM_RESULT_MEMO_LIMIT) {
+    wasmResultMemo.delete(wasmResultMemo.keys().next().value);
+  }
+}
+
+async function analyzeWithWasm(handText, melds, payload, options = {}) {
   const settings = loadReviewSettings();
+  const includeYakuStats = options.includeYakuStats !== false;
   const requestedFlags = {
     enable_shanten_down: settings.simulator_enable_shanten_down,
     enable_tegawari: settings.simulator_enable_tegawari,
   };
   const requestKey = buildWasmRequestKey(handText, melds, payload, settings);
   const mode = wasmModeForRequest(requestKey, requestedFlags);
-  const raw = await wasmAnalyze(buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey));
+  const memoKey = JSON.stringify([requestKey, mode.flags, includeYakuStats]);
+  if (settings.simulator_fast_similar_generation) {
+    const memoized = getMemoizedWasmResult(memoKey);
+    if (memoized) return memoized;
+  }
+  const raw = await wasmAnalyze(buildSimulatorEnginePayload(
+    handText, melds, payload, settings, mode, requestKey, includeYakuStats
+  ));
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
   if (raw.engine_version !== "0.9.13" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
   const simulation = summarizeWasmResult(raw, payload.turn);
   simulation.settings_signature = simulatorSettingsSignature(settings);
+  simulation.details_complete = includeYakuStats;
+  if (settings.simulator_fast_similar_generation && !simulation.solver_mode?.degraded) {
+    memoizeWasmResult(memoKey, simulation);
+  }
   return simulation;
 }
 
@@ -1837,6 +1873,7 @@ function simulatorSettingsSignature(settings = loadReviewSettings()) {
 
 function simulatorStatsNeedRefresh(simulation, settings = loadReviewSettings()) {
   if (!simulation?.rows?.length) return true;
+  if (simulation.details_complete === false) return true;
   if (simulation.settings_signature !== simulatorSettingsSignature(settings)) return true;
   return simulation.rows.some((row) => !Array.isArray(row.yaku_contributions));
 }
@@ -1873,7 +1910,37 @@ async function refreshQuizSimulatorStats(presentedProblem, answers, selectedTile
   }
 }
 
-function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey) {
+async function refreshStoredProblemSimulatorStats(problem, container, answers = [], selectedTile = null) {
+  if (!problem || !container || !simulatorStatsNeedRefresh(problem.simulator)) return;
+  if (simulatorDetailRefreshes.has(problem.id)) return simulatorDetailRefreshes.get(problem.id);
+  const task = (async () => {
+    const notice = document.createElement("p");
+    notice.className = "sim-refresh-status busy";
+    notice.textContent = "高速生成時に省略した役別Shapleyを補完しています。";
+    container.prepend(notice);
+    try {
+      const simulation = await analyzeWithWasm(
+        problem.hand,
+        problem.melds || [],
+        problemPayload(problem),
+        { includeYakuStats: true }
+      );
+      problem.simulator = simulation;
+      await saveProblems({ changedIds: [problem.id] });
+      renderSimulatorTable(container, simulation, answers, selectedTile);
+    } catch (error) {
+      notice.className = "sim-refresh-status error";
+      notice.textContent = `役別Shapleyを補完できませんでした: ${error.message || error}`;
+    } finally {
+      simulatorDetailRefreshes.delete(problem.id);
+    }
+  })();
+  simulatorDetailRefreshes.set(problem.id, task);
+  return task;
+}
+
+function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey, includeYakuStats = true) {
+  const turn = Math.min(18, Math.max(1, Number(payload.turn) || 1));
   return {
     __wasmRequestKey: requestKey,
     round_wind: tileIndex(payload.round_wind),
@@ -1896,10 +1963,11 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     other_win_hazard: settings.simulator_other_win_hazard_percent.map((value) => value / 100),
     enable_turn_yaku: true,
     calc_stats: true,
-    calc_yaku_stats: true,
-    calc_shapley_stats: true,
+    calc_yaku_stats: includeYakuStats,
+    calc_shapley_stats: includeYakuStats,
+    t_min: turn,
     ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
-    remaining_tiles: Math.min(70, Math.max(0, (18 - Math.min(18, Math.max(1, Number(payload.turn) || 1))) * 4)),
+    remaining_tiles: Math.min(70, Math.max(0, (18 - turn) * 4)),
     version: "0.9.13",
   };
 }
@@ -2367,6 +2435,7 @@ async function generateWithWasm() {
       } catch {}
     }
     const qualified = [];
+    const fastGeneration = loadReviewSettings().simulator_fast_similar_generation;
     let fallbackUsed = Boolean(sourceVerification.simulation?.solver_mode?.degraded);
     for (let index = 0; index < candidates.length; index++) {
       setAdminMessage(
@@ -2378,7 +2447,8 @@ async function generateWithWasm() {
         const simulation = await analyzeWithWasm(
           candidate.hand,
           candidate.melds,
-          { ...payload, dora: candidate.dora }
+          { ...payload, dora: candidate.dora },
+          { includeYakuStats: !fastGeneration }
         );
         if (simulation?.solver_mode?.degraded) fallbackUsed = true;
         const evaluation = evaluateSimilarProblem(simulation, candidate.answers, sourceConditions);
@@ -2424,7 +2494,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
+      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -2490,9 +2560,14 @@ function renderGeneratedResults(items) {
       <div id="generated-simulator-${index}"></div>
     </details>`;
   }).join("")}`;
-  items.forEach((problem, index) =>
-    renderSimulatorTable($(`generated-simulator-${index}`), problem.simulator, problem.answers || [], null)
-  );
+  items.forEach((problem, index) => {
+    const container = $(`generated-simulator-${index}`);
+    renderSimulatorTable(container, problem.simulator, problem.answers || [], null);
+    const details = container.closest("details");
+    details?.addEventListener("toggle", () => {
+      if (details.open) refreshStoredProblemSimulatorStats(problem, container, problem.answers || [], null);
+    });
+  });
 }
 
 function resetSingleUseFields() {
@@ -2769,6 +2844,7 @@ function previewProblem(problemId) {
   $("save-preview-problem").addEventListener("click", () => saveEditedProblem(problem));
   $("delete-preview-problem").addEventListener("click", () => deleteEditedProblem(problem));
   renderSimulatorTable($("preview-simulator"), problem.simulator, problem.answers || [], null);
+  refreshStoredProblemSimulatorStats(problem, $("preview-simulator"), problem.answers || [], null);
 }
 
 function problemPayload(problem) {
