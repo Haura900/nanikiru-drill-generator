@@ -57,6 +57,7 @@ let wasmRequestId = 0;
 let wasmWorkerUseCount = 0;
 let wasmWorkerGeneration = 0;
 let wasmQueue = Promise.resolve();
+let activeSimilarGeneration = null;
 const wasmRequests = new Map();
 const wasmResultMemo = new Map();
 const simulatorDetailRefreshes = new Map();
@@ -1566,6 +1567,7 @@ function bindAdmin() {
   $("verify-button").addEventListener("click", verifyWithWasm);
   $("save-button").addEventListener("click", saveCurrentProblem);
   $("generate-button").addEventListener("click", generateWithWasm);
+  $("stop-generate-button").addEventListener("click", stopSimilarGeneration);
   $("admin-count").addEventListener("input", saveAdminCount);
   ["manage-genre-filter", "manage-date-from", "manage-date-to", "manage-source-filter", "manage-text-filter"]
     .forEach((id) => $(id).addEventListener("input", () => { managementPage = 0; renderAdminProblems(); }));
@@ -2520,6 +2522,7 @@ async function searchSimilarCandidatesOnline({
   sourceConditions,
   analyze,
   onProgress = () => {},
+  shouldStop = () => false,
 }) {
   const scheduler = createOnlineSimilarScheduler(candidates, requested);
   let fastLimit = Math.min(candidates.length, Math.max(18, requested * 6));
@@ -2543,7 +2546,7 @@ async function searchSimilarCandidatesOnline({
   };
 
   const fillFrontier = async () => {
-    while (frontier.length < beamWidth && counters.fast < fastLimit) {
+    while (!shouldStop() && frontier.length < beamWidth && counters.fast < fastLimit) {
       const selected = scheduler.next();
       if (!selected) break;
       onProgress({
@@ -2551,6 +2554,7 @@ async function searchSimilarCandidatesOnline({
       });
       try {
         const simulation = await analyze(selected.candidate, "fast");
+        if (shouldStop()) break;
         if (simulation?.solver_mode?.degraded) fallbackUsed = true;
         const evaluation = evaluateSimilarProblem(
           simulation,
@@ -2572,11 +2576,12 @@ async function searchSimilarCandidatesOnline({
     );
   };
 
-  while (qualified.length < requested && (frontier.length || scheduler.remaining())) {
+  while (!shouldStop() && qualified.length < requested && (frontier.length || scheduler.remaining())) {
     if (counters.exact >= exactLimit && !expandLimits()) {
       break;
     }
     await fillFrontier();
+    if (shouldStop()) break;
     if (!frontier.length && scheduler.remaining() && counters.fast >= fastLimit) {
       if (expandLimits()) continue;
       break;
@@ -2599,6 +2604,7 @@ async function searchSimilarCandidatesOnline({
     try {
       const simulation = await analyze(selected.candidate, "exact");
       counters.exact++;
+      if (shouldStop()) break;
       if (simulation?.solver_mode?.degraded) fallbackUsed = true;
       const evaluation = evaluateSimilarProblem(
         simulation,
@@ -2626,12 +2632,41 @@ async function searchSimilarCandidatesOnline({
     limits: { fast: fastLimit, exact: exactLimit },
     fallbackUsed,
     expansions,
+    stopped: shouldStop(),
     remaining: scheduler.remaining() + frontier.length,
   };
 }
 
+function setSimilarGenerationControls(active) {
+  const stopButton = $("stop-generate-button");
+  stopButton.classList.toggle("hidden", !active);
+  stopButton.disabled = false;
+  stopButton.textContent = "ここまでを登録して停止";
+  $("generate-button").disabled = active;
+}
+
+function stopSimilarGeneration() {
+  const generation = activeSimilarGeneration;
+  if (!generation || generation.stopRequested) return;
+  generation.stopRequested = true;
+  const stopButton = $("stop-generate-button");
+  stopButton.disabled = true;
+  stopButton.textContent = "停止して登録中…";
+  setAdminMessage(
+    `類題生成を停止しています。完成済み${generation.completedCount || 0}問と元問題を登録します。`,
+    "busy",
+  );
+  // Interrupt the currently running exact DP. Its rejection is handled by the
+  // candidate loop, which then commits all results completed before this click.
+  resetWasmWorker(new Error("類題生成を停止しました。"));
+}
+
 async function generateWithWasm() {
+  if (activeSimilarGeneration) return;
   setAdminMessage("シミュレーターで類題候補を検証しています。", "busy");
+  const generation = { stopRequested: false, completedCount: 0 };
+  activeSimilarGeneration = generation;
+  $("generate-button").disabled = true;
   try {
     const fastGeneration = loadReviewSettings().simulator_fast_similar_generation;
     const sourceVerification = await runWasmVerification({
@@ -2649,6 +2684,7 @@ async function generateWithWasm() {
       sourceProblem = manualProblemFromForm(sourceVerification);
       pending.push(sourceProblem);
     }
+    setSimilarGenerationControls(true);
     const requested = Math.max(1, Math.min(100, payload.count || DEFAULT_ADMIN_COUNT));
     const specs = enumerateTransformSpecs(sourceVerification.hand, transformAuxiliaryTiles(payload));
     shuffleArray(specs);
@@ -2723,17 +2759,20 @@ async function generateWithWasm() {
           { includeYakuStats: false, estimateProfile },
         ),
         onProgress: ({ phase, counters, limits, found, requested: targetCount }) => {
+          generation.completedCount = found;
           const phaseName = { fast: "高速推定", exact: "厳密DP" }[phase];
           setAdminMessage(
             `${phaseName}で類題を探索しています（採用 ${found}/${targetCount}問・試行: 高速${counters.fast}件［現在枠${limits.fastLimit}］・厳密${counters.exact}件［現在枠${limits.exactLimit}］）`,
             "busy",
           );
         },
+        shouldStop: () => generation.stopRequested,
       });
       fallbackUsed ||= searchSummary.fallbackUsed;
       qualified = searchSummary.qualified.map(toProblem);
     } else {
       for (let index = 0; index < candidates.length; index++) {
+        if (generation.stopRequested) break;
         setAdminMessage(
           `シミュレーターで類題候補を検証しています（${index + 1}/${candidates.length}）`,
           "busy",
@@ -2745,10 +2784,12 @@ async function generateWithWasm() {
             candidate.melds,
             { ...payload, dora: candidate.dora },
           );
+          if (generation.stopRequested) break;
           if (simulation?.solver_mode?.degraded) fallbackUsed = true;
           const evaluation = evaluateSimilarProblem(simulation, candidate.answers, sourceConditions);
           if (!evaluation.accepted) continue;
           qualified.push(toProblem({ candidate, simulation, evaluation }));
+          generation.completedCount = qualified.length;
           if (qualified.length >= requested) break;
         } catch {}
       }
@@ -2764,8 +2805,11 @@ async function generateWithWasm() {
     const queryText = searchSummary
       ? ` エンジン呼出: 高速${searchSummary.counters.fast}件・厳密${searchSummary.counters.exact}件（未完了${searchSummary.remaining}件）。${searchSummary.expansions ? `探索枠を${searchSummary.expansions}回追加しました。` : ""}`
       : "";
+    const stoppedText = generation.stopRequested
+      ? `途中で停止し、完成済みの${accepted.length}問を登録しました。`
+      : `${accepted.length}問を登録しました。`;
     setAdminMessage(
-      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${accepted.length}問を登録しました。元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
+      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${stoppedText}元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -2773,6 +2817,9 @@ async function generateWithWasm() {
     resetSingleUseFields();
   } catch (error) {
     setAdminMessage(error.message, "error");
+  } finally {
+    if (activeSimilarGeneration === generation) activeSimilarGeneration = null;
+    setSimilarGenerationControls(false);
   }
 }
 

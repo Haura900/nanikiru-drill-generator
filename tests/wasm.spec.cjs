@@ -947,6 +947,61 @@ test("similar-problem generation uses the browser simulator path", async ({ page
   expect(result.message).toContain("2問を登録");
 });
 
+test("stopping similar generation registers the source and completed candidates", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    showView("create");
+    document.querySelector("#admin-genre").value = "停止テスト";
+    document.querySelector("#admin-hand").value = "45m2344779p23368s";
+    document.querySelector("#admin-answer").value = "9p";
+    document.querySelector("#admin-count").value = "3";
+    let registered = [];
+    let candidateExactCalls = 0;
+    window.analyzeWithWasm = async (handText, _melds, payload, options = {}) => {
+      const profile = options.estimateProfile || "exact";
+      if (profile === "exact" && handText !== "45m2344779p23368s") {
+        candidateExactCalls++;
+        if (candidateExactCalls === 2) {
+          document.querySelector("#stop-generate-button").click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      return {
+        version: "test-wasm",
+        turn: payload.turn,
+        objective: 2,
+        shanten: { all: 2 },
+        best_discards: [...new Set(parseMpsz(handText))],
+        rows: [...new Set(parseMpsz(handText))].map((tile) => ({
+          tile,
+          metric: 1000,
+          expected_score: 1000,
+          win_probability: 0.2,
+          tenpai_probability: 0.6,
+          ukeire: 20,
+          necessary_tiles: [],
+          shanten: 2,
+        })),
+      };
+    };
+    window.registerProblems = async (records) => { registered = records; };
+    await generateWithWasm();
+    return {
+      registered,
+      candidateExactCalls,
+      message: document.querySelector("#admin-message").textContent,
+      stopHidden: document.querySelector("#stop-generate-button").classList.contains("hidden"),
+    };
+  });
+  expect(result.candidateExactCalls).toBe(2);
+  expect(result.registered).toHaveLength(2);
+  expect(result.registered.filter((problem) => !problem.source_id)).toHaveLength(1);
+  expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(1);
+  expect(result.message).toContain("途中で停止");
+  expect(result.message).toContain("元問題も登録済み");
+  expect(result.stopHidden).toBe(true);
+});
+
 test("online similar search lazily samples degree lanes and stops after enough exact matches", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
