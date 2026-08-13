@@ -2669,9 +2669,10 @@ async function generateWithWasm() {
   $("generate-button").disabled = true;
   try {
     const fastGeneration = loadReviewSettings().simulator_fast_similar_generation;
-    const sourceVerification = await runWasmVerification({
-      includeYakuStats: !fastGeneration,
-    });
+    // The source result is rendered immediately and stored as a complete
+    // problem, so it must always include Shapley/yaku details. Only transformed
+    // candidates may defer those details until the problem is opened.
+    const sourceVerification = await runWasmVerification({ includeYakuStats: true });
     const payload = adminPayload();
     const sourceConditions = sourceVerification.similarity_conditions;
     const sourceKey = canonicalProblemKey({

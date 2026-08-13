@@ -912,11 +912,13 @@ test("similar-problem generation uses the browser simulator path", async ({ page
     let registered = [];
     const calls = [];
     window.analyzeWithWasm = async (handText, melds, payload, options = {}) => {
-      calls.push(options.estimateProfile || "exact");
+      const includeYakuStats = options.includeYakuStats !== false;
+      calls.push({ profile: options.estimateProfile || "exact", includeYakuStats });
       return ({
       version: "test-wasm",
       turn: payload.turn,
       objective: 2,
+      details_complete: includeYakuStats,
       shanten: { all: 2 },
       best_discards: [...new Set(parseMpsz(handText))],
       rows: [...new Set(parseMpsz(handText))].map((tile) => ({
@@ -928,6 +930,14 @@ test("similar-problem generation uses the browser simulator path", async ({ page
         ukeire: 20,
         necessary_tiles: [],
         shanten: 2,
+        yaku_contributions: includeYakuStats ? [{
+          yaku: 2, name: "立直", short_name: "立", occurrence: 0.2, shapley: 1000,
+        }] : [],
+        yaku_chart_contributions: includeYakuStats ? [{
+          yaku: 2, name: "立直", short_name: "立", occurrence: 0.2, shapley: 1000,
+        }] : [],
+        shapley_total: includeYakuStats ? 1000 : 0,
+        shapley_residual: 0,
       })),
       });
     };
@@ -937,13 +947,20 @@ test("similar-problem generation uses the browser simulator path", async ({ page
       registered,
       calls,
       message: document.querySelector("#admin-message").textContent,
+      sourceShapleyBars: document.querySelectorAll("#admin-simulator-table .shapley-track").length,
+      sourceMissingYaku: document.querySelector("#admin-simulator-table").textContent.includes("役別データなし"),
     };
   });
   expect(result.registered).toHaveLength(3);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
-  expect(result.calls.filter((profile) => profile === "fast")).toHaveLength(5);
-  expect(result.calls.filter((profile) => profile === "medium")).toHaveLength(0);
-  expect(result.calls.filter((profile) => profile === "exact")).toHaveLength(3);
+  expect(result.calls.filter((call) => call.profile === "fast")).toHaveLength(5);
+  expect(result.calls.filter((call) => call.profile === "medium")).toHaveLength(0);
+  expect(result.calls.filter((call) => call.profile === "exact")).toHaveLength(3);
+  expect(result.calls[0]).toEqual({ profile: "exact", includeYakuStats: true });
+  expect(result.calls.slice(1).every((call) => call.includeYakuStats === false)).toBe(true);
+  expect(result.registered.find((problem) => !problem.source_id).simulator.details_complete).toBe(true);
+  expect(result.sourceShapleyBars).toBeGreaterThan(0);
+  expect(result.sourceMissingYaku).toBe(false);
   expect(result.message).toContain("2問を登録");
 });
 
