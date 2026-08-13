@@ -987,6 +987,84 @@ test("online similar search lazily samples degree lanes and stops after enough e
   expect(new Set(result.search.qualified.map((item) => item.candidate.spec.degree)).size).toBe(2);
 });
 
+test("online similar search expands its batches until the requested count is filled", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    const candidates = Array.from({ length: 41 }, (_, index) => ({
+      id: index,
+      hand: "123m123p123s11122z",
+      answers: ["1m"],
+      spec: { degree: index % 6 + 1, slides: { 0: index } },
+    }));
+    const sourceConditions = {
+      tolerance_percent: 0,
+      max_rank: 1,
+      next_worse_rank: 2,
+      next_worse_gap_percent: 10,
+    };
+    const accepted = {
+      rows: [
+        { tile: "1m", metric: 100 },
+        { tile: "2m", metric: 80 },
+      ],
+    };
+    const rejected = {
+      rows: [
+        { tile: "2m", metric: 100 },
+        { tile: "1m", metric: 80 },
+      ],
+    };
+    let exactCalls = 0;
+    const search = await searchSimilarCandidatesOnline({
+      candidates,
+      requested: 3,
+      sourceConditions,
+      analyze: async (_candidate, profile) => {
+        if (profile !== "exact") return accepted;
+        exactCalls++;
+        return [1, 7, 13].includes(exactCalls) ? accepted : rejected;
+      },
+    });
+    return { search, exactCalls };
+  });
+  expect(result.search.qualified).toHaveLength(3);
+  expect(result.exactCalls).toBe(13);
+  expect(result.search.expansions).toBeGreaterThan(0);
+  expect(result.search.limits.exact).toBeGreaterThan(6);
+});
+
+test("online similar search exhausts candidates instead of stopping at its initial budget", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    const candidates = Array.from({ length: 10 }, (_, index) => ({
+      id: index,
+      hand: "123m123p123s11122z",
+      answers: ["1m"],
+      spec: { degree: index % 6 + 1, slides: { 0: index } },
+    }));
+    const rejected = {
+      rows: [
+        { tile: "2m", metric: 100 },
+        { tile: "1m", metric: 80 },
+      ],
+    };
+    return searchSimilarCandidatesOnline({
+      candidates,
+      requested: 3,
+      sourceConditions: {
+        tolerance_percent: 0,
+        max_rank: 1,
+        next_worse_rank: 2,
+        next_worse_gap_percent: 10,
+      },
+      analyze: async () => rejected,
+    });
+  });
+  expect(result.qualified).toHaveLength(0);
+  expect(result.counters).toEqual({ fast: 10, medium: 10, exact: 10 });
+  expect(result.remaining).toBe(0);
+});
+
 test("similar-problem conditions use source tolerance, rank and fixed next-worse rank", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => {
