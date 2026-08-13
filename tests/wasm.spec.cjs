@@ -910,7 +910,10 @@ test("similar-problem generation uses the browser simulator path", async ({ page
     document.querySelector("#admin-answer").value = "9p";
     document.querySelector("#admin-count").value = "2";
     let registered = [];
-    window.analyzeWithWasm = async (handText, melds, payload) => ({
+    const calls = [];
+    window.analyzeWithWasm = async (handText, melds, payload, options = {}) => {
+      calls.push(options.estimateProfile || "exact");
+      return ({
       version: "test-wasm",
       turn: payload.turn,
       objective: 2,
@@ -926,17 +929,62 @@ test("similar-problem generation uses the browser simulator path", async ({ page
         necessary_tiles: [],
         shanten: 2,
       })),
-    });
+      });
+    };
     window.registerProblems = async (records) => { registered = records; };
     await generateWithWasm();
     return {
       registered,
+      calls,
       message: document.querySelector("#admin-message").textContent,
     };
   });
   expect(result.registered).toHaveLength(3);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
+  expect(result.calls.filter((profile) => profile === "fast")).toHaveLength(5);
+  expect(result.calls.filter((profile) => profile === "medium")).toHaveLength(2);
+  expect(result.calls.filter((profile) => profile === "exact")).toHaveLength(3);
   expect(result.message).toContain("2問を登録");
+});
+
+test("online similar search lazily samples degree lanes and stops after enough exact matches", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    const candidates = Array.from({ length: 120 }, (_, index) => ({
+      id: index,
+      hand: "123m123p123s11122z",
+      answers: ["1m"],
+      spec: { degree: index % 6 + 1 },
+    }));
+    const sourceConditions = {
+      tolerance_percent: 0,
+      max_rank: 1,
+      next_worse_rank: 2,
+      next_worse_gap_percent: 10,
+    };
+    const calls = [];
+    const simulation = {
+      rows: [
+        { tile: "1m", metric: 100 },
+        { tile: "2m", metric: 80 },
+      ],
+    };
+    const search = await searchSimilarCandidatesOnline({
+      candidates,
+      requested: 2,
+      sourceConditions,
+      analyze: async (candidate, profile) => {
+        calls.push({ id: candidate.id, profile, degree: candidate.spec.degree });
+        return simulation;
+      },
+    });
+    return { calls, search };
+  });
+  expect(result.search.qualified).toHaveLength(2);
+  expect(result.search.counters).toEqual({ fast: 5, medium: 2, exact: 2 });
+  expect(result.search.remaining).toBe(118);
+  expect(new Set(result.calls.filter((call) => call.profile === "fast").map((call) => call.degree)).size).toBe(5);
+  expect(new Set(result.search.qualified.map((item) => item.candidate.spec.degree)).size).toBe(2);
 });
 
 test("similar-problem conditions use source tolerance, rank and fixed next-worse rank", async ({ page }) => {

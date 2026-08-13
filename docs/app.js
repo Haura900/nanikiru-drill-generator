@@ -1771,7 +1771,7 @@ async function verifyWithWasm() {
   }
 }
 
-async function runWasmVerification() {
+async function runWasmVerification(options = {}) {
   const payload = adminPayload();
   const hand = parseMpsz(payload.hand);
   const melds = parseMeldsClient(payload.melds);
@@ -1783,7 +1783,7 @@ async function runWasmVerification() {
   if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
     throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   }
-  const simulation = await analyzeWithWasm(payload.hand, melds, payload);
+  const simulation = await analyzeWithWasm(payload.hand, melds, payload, options);
   const answerGaps = calculateAnswerGaps(simulation, answers);
   const required = Math.max(...Object.values(answerGaps));
   const answerConditions = calculateAnswerConditions(simulation, answers);
@@ -1827,8 +1827,20 @@ function memoizeWasmResult(key, value) {
 }
 
 async function analyzeWithWasm(handText, melds, payload, options = {}) {
-  const settings = loadReviewSettings();
+  const storedSettings = loadReviewSettings();
   const includeYakuStats = options.includeYakuStats !== false;
+  const estimateProfile = options.estimateProfile || "exact";
+  const settings = {
+    ...storedSettings,
+    ...(estimateProfile === "fast" ? {
+      simulator_enable_shanten_down: false,
+      simulator_enable_tegawari: false,
+    } : {}),
+    ...(estimateProfile === "medium" ? {
+      simulator_enable_shanten_down: false,
+      simulator_enable_tegawari: storedSettings.simulator_enable_tegawari,
+    } : {}),
+  };
   const requestedFlags = {
     enable_shanten_down: settings.simulator_enable_shanten_down,
     enable_tegawari: settings.simulator_enable_tegawari,
@@ -1850,6 +1862,7 @@ async function analyzeWithWasm(handText, melds, payload, options = {}) {
   const simulation = summarizeWasmResult(raw, payload.turn);
   simulation.settings_signature = simulatorSettingsSignature(settings);
   simulation.details_complete = includeYakuStats;
+  simulation.estimate_profile = estimateProfile;
   if (settings.simulator_fast_similar_generation && !simulation.solver_mode?.degraded) {
     memoizeWasmResult(memoKey, simulation);
   }
@@ -2388,10 +2401,254 @@ async function registerProblems(records) {
   refreshGenres();
 }
 
+function similarCandidateReward(evaluation, sourceConditions) {
+  const toleranceExcess = Math.max(
+    0,
+    Number(evaluation.max_gap_percent || 0) - Number(sourceConditions.tolerance_percent || 0),
+  );
+  const rankExcess = Math.max(
+    0,
+    Number(evaluation.conditions?.max_rank || 1) - Number(sourceConditions.max_rank || 1),
+  );
+  const requiredSeparation = sourceConditions.next_worse_gap_percent;
+  const actualSeparation = evaluation.conditions?.next_worse_gap_percent;
+  const separationShortfall = requiredSeparation == null || actualSeparation == null
+    ? 0
+    : Math.max(0, Number(requiredSeparation) - Number(actualSeparation));
+  const violation = toleranceExcess * 2 + rankExcess * 4 + separationShortfall;
+  return 1 / (1 + violation);
+}
+
+function transformSpecDistance(left, right) {
+  const leftReversals = new Set(left?.reverse_suits || []);
+  const rightReversals = new Set(right?.reverse_suits || []);
+  let distance = [...new Set([...leftReversals, ...rightReversals])]
+    .filter((suit) => leftReversals.has(suit) !== rightReversals.has(suit))
+    .length;
+  const leftSlides = left?.slides || {};
+  const rightSlides = right?.slides || {};
+  [...new Set([...Object.keys(leftSlides), ...Object.keys(rightSlides)])].forEach((key) => {
+    if (Number(leftSlides[key] || 0) !== Number(rightSlides[key] || 0)) distance++;
+  });
+  return distance;
+}
+
+function createOnlineSimilarScheduler(candidates, requested = 1, random = Math.random) {
+  const lanes = new Map();
+  candidates.forEach((candidate) => {
+    const degree = Math.max(1, Number(candidate.spec?.degree || 1));
+    if (!lanes.has(degree)) lanes.set(degree, []);
+    lanes.get(degree).push(candidate);
+  });
+  lanes.forEach((items) => shuffleArray(items, random));
+  const stats = new Map([...lanes.keys()].map((degree) => [degree, {
+    pulls: 0,
+    reward_sum: 0,
+    refinements: 0,
+    refinement_sum: 0,
+    accepted: 0,
+  }]));
+  const degreeQuota = Math.ceil(requested / Math.min(requested, lanes.size));
+  const focusSpecs = [];
+  let totalPulls = 0;
+
+  return {
+    next() {
+      const allAvailable = [...lanes.entries()].filter(([, items]) => items.length);
+      const diverse = allAvailable.filter(([degree]) => stats.get(degree).accepted < degreeQuota);
+      const available = diverse.length ? diverse : allAvailable;
+      if (!available.length) return null;
+      available.sort(([leftDegree], [rightDegree]) => {
+        const leftStat = stats.get(leftDegree);
+        const rightStat = stats.get(rightDegree);
+        if (!leftStat.pulls && rightStat.pulls) return -1;
+        if (leftStat.pulls && !rightStat.pulls) return 1;
+        if (!leftStat.pulls && !rightStat.pulls) return leftDegree - rightDegree;
+        const score = (degree) => {
+          const stat = stats.get(degree);
+          const observations = stat.pulls + stat.refinements * 2;
+          const mean = (stat.reward_sum + stat.refinement_sum * 2) / observations;
+          const exploration = Math.sqrt(
+            1.2 * Math.log(totalPulls + 2) / observations,
+          );
+          return mean + exploration;
+        };
+        const difference = score(rightDegree) - score(leftDegree);
+        return Math.abs(difference) > 1e-12
+          ? difference
+          : leftDegree - rightDegree;
+      });
+      const [degree, items] = available[0];
+      return { candidate: items.pop(), degree };
+    },
+    observe(degree, reward) {
+      const stat = stats.get(degree);
+      if (!stat) return;
+      stat.pulls++;
+      stat.reward_sum += Math.max(0, Math.min(1, Number(reward) || 0));
+      totalPulls++;
+    },
+    refine(degree, reward) {
+      const stat = stats.get(degree);
+      if (!stat) return;
+      stat.refinements++;
+      stat.refinement_sum += Math.max(0, Math.min(1, Number(reward) || 0));
+    },
+    markAccepted(degree) {
+      const stat = stats.get(degree);
+      if (stat) stat.accepted++;
+    },
+    focus(candidate) {
+      if (!candidate?.spec) return;
+      focusSpecs.push(candidate.spec);
+      lanes.forEach((items) => items.sort((left, right) => {
+        const nearest = (item) => Math.min(
+          ...focusSpecs.map((spec) => transformSpecDistance(item.spec, spec)),
+        );
+        // The lane uses pop(), so farther candidates are placed first.
+        return nearest(right) - nearest(left);
+      }));
+    },
+    isSaturated(degree) {
+      return (stats.get(degree)?.accepted || 0) >= degreeQuota;
+    },
+    remaining() {
+      return [...lanes.values()].reduce((sum, items) => sum + items.length, 0);
+    },
+  };
+}
+
+function shouldVerifyMediumEstimate(evaluation, sourceConditions, queryIndex) {
+  if (evaluation.accepted) return true;
+  const reward = similarCandidateReward(evaluation, sourceConditions);
+  // The medium model is an ordering oracle, not a hard filter. Periodically
+  // verify its best near-miss so a systematic estimation bias can be observed.
+  return reward >= 0.6 && queryIndex % 4 === 0;
+}
+
+async function searchSimilarCandidatesOnline({
+  candidates,
+  requested,
+  sourceConditions,
+  analyze,
+  onProgress = () => {},
+}) {
+  const scheduler = createOnlineSimilarScheduler(candidates, requested);
+  const fastLimit = Math.min(candidates.length, Math.max(18, requested * 6));
+  const mediumLimit = Math.min(fastLimit, Math.max(8, requested * 3));
+  const exactLimit = Math.min(mediumLimit, Math.max(requested + 3, requested * 2));
+  const beamWidth = Math.min(8, Math.max(4, requested));
+  const frontier = [];
+  const qualified = [];
+  const counters = { fast: 0, medium: 0, exact: 0 };
+  let fallbackUsed = false;
+
+  const fillFrontier = async () => {
+    while (frontier.length < beamWidth && counters.fast < fastLimit) {
+      const selected = scheduler.next();
+      if (!selected) break;
+      onProgress({ phase: "fast", counters, limits: { fastLimit, mediumLimit, exactLimit } });
+      try {
+        const simulation = await analyze(selected.candidate, "fast");
+        if (simulation?.solver_mode?.degraded) fallbackUsed = true;
+        const evaluation = evaluateSimilarProblem(
+          simulation,
+          selected.candidate.answers,
+          sourceConditions,
+        );
+        const reward = similarCandidateReward(evaluation, sourceConditions);
+        scheduler.observe(selected.degree, reward);
+        frontier.push({ ...selected, fastEvaluation: evaluation, fastReward: reward });
+      } catch {
+        scheduler.observe(selected.degree, 0);
+      } finally {
+        counters.fast++;
+      }
+    }
+    frontier.sort((left, right) =>
+      right.fastReward - left.fastReward
+      || left.degree - right.degree
+    );
+  };
+
+  while (
+    qualified.length < requested
+    && counters.medium < mediumLimit
+    && counters.exact < exactLimit
+    && (frontier.length || scheduler.remaining())
+  ) {
+    await fillFrontier();
+    let selected = frontier.shift();
+    while (
+      selected
+      && scheduler.isSaturated(selected.degree)
+      && counters.medium < Math.floor(mediumLimit * 0.75)
+    ) {
+      selected = frontier.shift();
+    }
+    if (!selected) break;
+    onProgress({ phase: "medium", counters, limits: { fastLimit, mediumLimit, exactLimit } });
+    let mediumEvaluation;
+    try {
+      const simulation = await analyze(selected.candidate, "medium");
+      if (simulation?.solver_mode?.degraded) fallbackUsed = true;
+      mediumEvaluation = evaluateSimilarProblem(
+        simulation,
+        selected.candidate.answers,
+        sourceConditions,
+      );
+    } catch {
+      counters.medium++;
+      continue;
+    }
+    counters.medium++;
+    scheduler.refine(
+      selected.degree,
+      similarCandidateReward(mediumEvaluation, sourceConditions),
+    );
+    if (!shouldVerifyMediumEstimate(mediumEvaluation, sourceConditions, counters.medium)) continue;
+
+    onProgress({ phase: "exact", counters, limits: { fastLimit, mediumLimit, exactLimit } });
+    try {
+      const simulation = await analyze(selected.candidate, "exact");
+      counters.exact++;
+      if (simulation?.solver_mode?.degraded) fallbackUsed = true;
+      const evaluation = evaluateSimilarProblem(
+        simulation,
+        selected.candidate.answers,
+        sourceConditions,
+      );
+      scheduler.refine(selected.degree, evaluation.accepted ? 1 : 0);
+      if (evaluation.accepted) {
+        qualified.push({ candidate: selected.candidate, simulation, evaluation });
+        scheduler.markAccepted(selected.degree);
+        scheduler.focus(selected.candidate);
+        frontier.sort((left, right) =>
+          transformSpecDistance(left.candidate.spec, selected.candidate.spec)
+          - transformSpecDistance(right.candidate.spec, selected.candidate.spec)
+        );
+      }
+    } catch {
+      counters.exact++;
+    }
+  }
+
+  return {
+    qualified,
+    counters,
+    limits: { fast: fastLimit, medium: mediumLimit, exact: exactLimit },
+    fallbackUsed,
+    remaining: scheduler.remaining() + frontier.length,
+  };
+}
+
 async function generateWithWasm() {
   setAdminMessage("シミュレーターで類題候補を検証しています。", "busy");
   try {
-    const sourceVerification = await runWasmVerification();
+    const fastGeneration = loadReviewSettings().simulator_fast_similar_generation;
+    const sourceVerification = await runWasmVerification({
+      includeYakuStats: !fastGeneration,
+    });
     const payload = adminPayload();
     const sourceConditions = sourceVerification.similarity_conditions;
     const sourceKey = canonicalProblemKey({
@@ -2434,26 +2691,8 @@ async function generateWithWasm() {
         candidates.push({ ...transformed, spec });
       } catch {}
     }
-    const qualified = [];
-    const fastGeneration = loadReviewSettings().simulator_fast_similar_generation;
     let fallbackUsed = Boolean(sourceVerification.simulation?.solver_mode?.degraded);
-    for (let index = 0; index < candidates.length; index++) {
-      setAdminMessage(
-        `シミュレーターで類題候補を検証しています（${index + 1}/${candidates.length}）`,
-        "busy"
-      );
-      const candidate = candidates[index];
-      try {
-        const simulation = await analyzeWithWasm(
-          candidate.hand,
-          candidate.melds,
-          { ...payload, dora: candidate.dora },
-          { includeYakuStats: !fastGeneration }
-        );
-        if (simulation?.solver_mode?.degraded) fallbackUsed = true;
-        const evaluation = evaluateSimilarProblem(simulation, candidate.answers, sourceConditions);
-        if (!evaluation.accepted) continue;
-        qualified.push({
+    const toProblem = ({ candidate, simulation, evaluation }) => ({
           id: crypto.randomUUID(),
           hand: candidate.hand,
           answers: candidate.answers,
@@ -2482,8 +2721,49 @@ async function generateWithWasm() {
           },
           simulator: simulation,
         });
-        if (qualified.length >= requested) break;
-      } catch {}
+    let qualified = [];
+    let searchSummary = null;
+    if (fastGeneration) {
+      searchSummary = await searchSimilarCandidatesOnline({
+        candidates,
+        requested,
+        sourceConditions,
+        analyze: (candidate, estimateProfile) => analyzeWithWasm(
+          candidate.hand,
+          candidate.melds,
+          { ...payload, dora: candidate.dora },
+          { includeYakuStats: false, estimateProfile },
+        ),
+        onProgress: ({ phase, counters, limits }) => {
+          const phaseName = { fast: "高速推定", medium: "中精度推定", exact: "厳密DP" }[phase];
+          setAdminMessage(
+            `${phaseName}で類題を探索しています（高速 ${counters.fast}/${limits.fastLimit}・中精度 ${counters.medium}/${limits.mediumLimit}・厳密 ${counters.exact}/${limits.exactLimit}）`,
+            "busy",
+          );
+        },
+      });
+      fallbackUsed ||= searchSummary.fallbackUsed;
+      qualified = searchSummary.qualified.map(toProblem);
+    } else {
+      for (let index = 0; index < candidates.length; index++) {
+        setAdminMessage(
+          `シミュレーターで類題候補を検証しています（${index + 1}/${candidates.length}）`,
+          "busy",
+        );
+        const candidate = candidates[index];
+        try {
+          const simulation = await analyzeWithWasm(
+            candidate.hand,
+            candidate.melds,
+            { ...payload, dora: candidate.dora },
+          );
+          if (simulation?.solver_mode?.degraded) fallbackUsed = true;
+          const evaluation = evaluateSimilarProblem(simulation, candidate.answers, sourceConditions);
+          if (!evaluation.accepted) continue;
+          qualified.push(toProblem({ candidate, simulation, evaluation }));
+          if (qualified.length >= requested) break;
+        } catch {}
+      }
     }
     shuffleArray(qualified);
     const accepted = qualified.slice(0, requested);
@@ -2493,8 +2773,11 @@ async function generateWithWasm() {
     const degreeText = Object.entries(degrees)
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
+    const queryText = searchSummary
+      ? ` エンジン呼出: 高速${searchSummary.counters.fast}件・中精度${searchSummary.counters.medium}件・厳密${searchSummary.counters.exact}件（未完了${searchSummary.remaining}件）。`
+      : "";
     setAdminMessage(
-      `${candidates.length}候補を検証し、条件を満たした${qualified.length}問からランダムに${accepted.length}問を登録しました。元問題も登録済みです。許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
+      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${accepted.length}問を登録しました。元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -3768,9 +4051,9 @@ function canonicalProblemKey(problem) {
   return `${hand}|${meldText}`;
 }
 
-function shuffleArray(values) {
+function shuffleArray(values, random = Math.random) {
   for (let index = values.length - 1; index > 0; index--) {
-    const other = Math.floor(Math.random() * (index + 1));
+    const other = Math.floor(random() * (index + 1));
     [values[index], values[other]] = [values[other], values[index]];
   }
   return values;
