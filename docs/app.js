@@ -1836,10 +1836,6 @@ async function analyzeWithWasm(handText, melds, payload, options = {}) {
       simulator_enable_shanten_down: false,
       simulator_enable_tegawari: false,
     } : {}),
-    ...(estimateProfile === "medium" ? {
-      simulator_enable_shanten_down: false,
-      simulator_enable_tegawari: storedSettings.simulator_enable_tegawari,
-    } : {}),
   };
   const requestedFlags = {
     enable_shanten_down: settings.simulator_enable_shanten_down,
@@ -2518,14 +2514,6 @@ function createOnlineSimilarScheduler(candidates, requested = 1, random = Math.r
   };
 }
 
-function shouldVerifyMediumEstimate(evaluation, sourceConditions, queryIndex) {
-  if (evaluation.accepted) return true;
-  const reward = similarCandidateReward(evaluation, sourceConditions);
-  // The medium model is an ordering oracle, not a hard filter. Periodically
-  // verify its best near-miss so a systematic estimation bias can be observed.
-  return reward >= 0.6 && queryIndex % 4 === 0;
-}
-
 async function searchSimilarCandidatesOnline({
   candidates,
   requested,
@@ -2535,24 +2523,21 @@ async function searchSimilarCandidatesOnline({
 }) {
   const scheduler = createOnlineSimilarScheduler(candidates, requested);
   let fastLimit = Math.min(candidates.length, Math.max(18, requested * 6));
-  let mediumLimit = Math.min(fastLimit, Math.max(8, requested * 3));
-  let exactLimit = Math.min(mediumLimit, Math.max(requested + 3, requested * 2));
+  let exactLimit = Math.min(fastLimit, Math.max(requested + 3, requested * 2));
   const beamWidth = Math.min(8, Math.max(4, requested));
   const frontier = [];
-  const exactBacklog = [];
   const qualified = [];
-  const counters = { fast: 0, medium: 0, exact: 0 };
+  const counters = { fast: 0, exact: 0 };
   let fallbackUsed = false;
   let expansions = 0;
 
-  const currentLimits = () => ({ fastLimit, mediumLimit, exactLimit });
+  const currentLimits = () => ({ fastLimit, exactLimit });
   const expandLimits = () => {
     const missing = Math.max(1, requested - qualified.length);
-    const previous = `${fastLimit}/${mediumLimit}/${exactLimit}`;
+    const previous = `${fastLimit}/${exactLimit}`;
     fastLimit = Math.min(candidates.length, fastLimit + Math.max(6, missing * 6));
-    mediumLimit = Math.min(fastLimit, mediumLimit + Math.max(4, missing * 3));
-    exactLimit = Math.min(mediumLimit, exactLimit + Math.max(2, missing * 2));
-    const changed = previous !== `${fastLimit}/${mediumLimit}/${exactLimit}`;
+    exactLimit = Math.min(fastLimit, exactLimit + Math.max(2, missing * 2));
+    const changed = previous !== `${fastLimit}/${exactLimit}`;
     if (changed) expansions++;
     return changed;
   };
@@ -2588,7 +2573,7 @@ async function searchSimilarCandidatesOnline({
   };
 
   while (qualified.length < requested && (frontier.length || scheduler.remaining())) {
-    if ((counters.medium >= mediumLimit || counters.exact >= exactLimit) && !expandLimits()) {
+    if (counters.exact >= exactLimit && !expandLimits()) {
       break;
     }
     await fillFrontier();
@@ -2600,7 +2585,7 @@ async function searchSimilarCandidatesOnline({
     while (
       selected
       && scheduler.isSaturated(selected.degree)
-      && counters.medium < Math.floor(mediumLimit * 0.75)
+      && counters.exact < Math.floor(exactLimit * 0.75)
     ) {
       selected = frontier.shift();
     }
@@ -2608,35 +2593,6 @@ async function searchSimilarCandidatesOnline({
       if (scheduler.remaining()) continue;
       break;
     }
-    onProgress({
-      phase: "medium", counters, limits: currentLimits(), found: qualified.length, requested,
-    });
-    let mediumEvaluation;
-    try {
-      const simulation = await analyze(selected.candidate, "medium");
-      if (simulation?.solver_mode?.degraded) fallbackUsed = true;
-      mediumEvaluation = evaluateSimilarProblem(
-        simulation,
-        selected.candidate.answers,
-        sourceConditions,
-      );
-    } catch {
-      counters.medium++;
-      continue;
-    }
-    counters.medium++;
-    scheduler.refine(
-      selected.degree,
-      similarCandidateReward(mediumEvaluation, sourceConditions),
-    );
-    if (!shouldVerifyMediumEstimate(mediumEvaluation, sourceConditions, counters.medium)) {
-      exactBacklog.push({
-        ...selected,
-        mediumReward: similarCandidateReward(mediumEvaluation, sourceConditions),
-      });
-      continue;
-    }
-
     onProgress({
       phase: "exact", counters, limits: currentLimits(), found: qualified.length, requested,
     });
@@ -2664,41 +2620,13 @@ async function searchSimilarCandidatesOnline({
     }
   }
 
-  // If the approximate stages exhausted the candidate pool without finding the
-  // requested count, verify their closest misses exactly instead of returning
-  // early merely because an estimation budget was reached.
-  exactBacklog.sort((left, right) => right.mediumReward - left.mediumReward);
-  while (qualified.length < requested && exactBacklog.length) {
-    if (counters.exact >= exactLimit && !expandLimits()) break;
-    const selected = exactBacklog.shift();
-    onProgress({
-      phase: "exact", counters, limits: currentLimits(), found: qualified.length, requested,
-    });
-    try {
-      const simulation = await analyze(selected.candidate, "exact");
-      counters.exact++;
-      if (simulation?.solver_mode?.degraded) fallbackUsed = true;
-      const evaluation = evaluateSimilarProblem(
-        simulation,
-        selected.candidate.answers,
-        sourceConditions,
-      );
-      if (evaluation.accepted) {
-        qualified.push({ candidate: selected.candidate, simulation, evaluation });
-        scheduler.markAccepted(selected.degree);
-      }
-    } catch {
-      counters.exact++;
-    }
-  }
-
   return {
     qualified,
     counters,
-    limits: { fast: fastLimit, medium: mediumLimit, exact: exactLimit },
+    limits: { fast: fastLimit, exact: exactLimit },
     fallbackUsed,
     expansions,
-    remaining: scheduler.remaining() + frontier.length + exactBacklog.length,
+    remaining: scheduler.remaining() + frontier.length,
   };
 }
 
@@ -2795,9 +2723,9 @@ async function generateWithWasm() {
           { includeYakuStats: false, estimateProfile },
         ),
         onProgress: ({ phase, counters, limits, found, requested: targetCount }) => {
-          const phaseName = { fast: "高速推定", medium: "中精度推定", exact: "厳密DP" }[phase];
+          const phaseName = { fast: "高速推定", exact: "厳密DP" }[phase];
           setAdminMessage(
-            `${phaseName}で類題を探索しています（採用 ${found}/${targetCount}問・試行: 高速${counters.fast}件［現在枠${limits.fastLimit}］・中精度${counters.medium}件［現在枠${limits.mediumLimit}］・厳密${counters.exact}件［現在枠${limits.exactLimit}］）`,
+            `${phaseName}で類題を探索しています（採用 ${found}/${targetCount}問・試行: 高速${counters.fast}件［現在枠${limits.fastLimit}］・厳密${counters.exact}件［現在枠${limits.exactLimit}］）`,
             "busy",
           );
         },
@@ -2834,7 +2762,7 @@ async function generateWithWasm() {
       .map(([degree, count]) => `加工度${degree}:${count}`)
       .join(" / ");
     const queryText = searchSummary
-      ? ` エンジン呼出: 高速${searchSummary.counters.fast}件・中精度${searchSummary.counters.medium}件・厳密${searchSummary.counters.exact}件（未完了${searchSummary.remaining}件）。${searchSummary.expansions ? `探索枠を${searchSummary.expansions}回追加しました。` : ""}`
+      ? ` エンジン呼出: 高速${searchSummary.counters.fast}件・厳密${searchSummary.counters.exact}件（未完了${searchSummary.remaining}件）。${searchSummary.expansions ? `探索枠を${searchSummary.expansions}回追加しました。` : ""}`
       : "";
     setAdminMessage(
       `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${accepted.length}問を登録しました。元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
