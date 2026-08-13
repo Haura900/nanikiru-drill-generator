@@ -942,7 +942,7 @@ test("similar-problem generation uses the browser simulator path", async ({ page
   expect(result.registered).toHaveLength(3);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
   expect(result.calls.filter((profile) => profile === "fast")).toHaveLength(5);
-  expect(result.calls.filter((profile) => profile === "medium")).toHaveLength(2);
+  expect(result.calls.filter((profile) => profile === "medium")).toHaveLength(0);
   expect(result.calls.filter((profile) => profile === "exact")).toHaveLength(3);
   expect(result.message).toContain("2問を登録");
 });
@@ -981,10 +981,51 @@ test("online similar search lazily samples degree lanes and stops after enough e
     return { calls, search };
   });
   expect(result.search.qualified).toHaveLength(2);
-  expect(result.search.counters).toEqual({ fast: 5, medium: 2, exact: 2 });
+  expect(result.search.counters).toEqual({ fast: 5, exact: 2 });
   expect(result.search.remaining).toBe(118);
   expect(new Set(result.calls.filter((call) => call.profile === "fast").map((call) => call.degree)).size).toBe(5);
   expect(new Set(result.search.qualified.map((item) => item.candidate.spec.degree)).size).toBe(2);
+});
+
+test("fast estimates only order candidates and never decide acceptance", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    const rejectedEstimate = {
+      rows: [
+        { tile: "2m", metric: 100 },
+        { tile: "1m", metric: 80 },
+      ],
+    };
+    const acceptedExact = {
+      rows: [
+        { tile: "1m", metric: 100 },
+        { tile: "2m", metric: 80 },
+      ],
+    };
+    const profiles = [];
+    const search = await searchSimilarCandidatesOnline({
+      candidates: [{
+        id: 1,
+        hand: "123m123p123s11122z",
+        answers: ["1m"],
+        spec: { degree: 1 },
+      }],
+      requested: 1,
+      sourceConditions: {
+        tolerance_percent: 0,
+        max_rank: 1,
+        next_worse_rank: 2,
+        next_worse_gap_percent: 10,
+      },
+      analyze: async (_candidate, profile) => {
+        profiles.push(profile);
+        return profile === "exact" ? acceptedExact : rejectedEstimate;
+      },
+    });
+    return { search, profiles };
+  });
+  expect(result.profiles).toEqual(["fast", "exact"]);
+  expect(result.search.qualified).toHaveLength(1);
 });
 
 test("online similar search expands its batches until the requested count is filled", async ({ page }) => {
@@ -1061,7 +1102,7 @@ test("online similar search exhausts candidates instead of stopping at its initi
     });
   });
   expect(result.qualified).toHaveLength(0);
-  expect(result.counters).toEqual({ fast: 10, medium: 10, exact: 10 });
+  expect(result.counters).toEqual({ fast: 10, exact: 10 });
   expect(result.remaining).toBe(0);
 });
 
