@@ -24,6 +24,12 @@ const DEFAULT_OTHER_WIN_HAZARD_PERCENT = Object.freeze([
   0.02, 0.08, 0.29, 0.78, 1.70, 3.05, 4.67, 6.44, 8.23,
   9.75, 11.08, 12.12, 12.76, 13.12, 13.23, 13.09, 11.70, 11.70,
 ]);
+const DEFAULT_SITUATIONAL_HAZARD_MULTIPLIERS = Object.freeze({
+  opponent_riichi: 1.65,
+  opponent_double_riichi: 2.10,
+  opponent_two_meld: 1.35,
+  self_riichi: 1.18,
+});
 const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   first_correct_days: 7,
   wrong_retry_days: 0,
@@ -45,6 +51,11 @@ const DEFAULT_REVIEW_SETTINGS = Object.freeze({
   simulator_fast_similar_generation: true,
   simulator_tsumo_win_share_percent: 30,
   simulator_other_win_hazard_percent: DEFAULT_OTHER_WIN_HAZARD_PERCENT,
+  simulator_enable_situational_hazard: false,
+  simulator_opponent_riichi_count: 0,
+  simulator_opponent_two_meld_count: 0,
+  simulator_self_riichi: false,
+  simulator_situational_hazard_multipliers: DEFAULT_SITUATIONAL_HAZARD_MULTIPLIERS,
 });
 let problems = [];
 let currentProblem = null;
@@ -730,6 +741,7 @@ function loadReviewSettings() {
 }
 
 function sanitizeReviewSettings(stored = {}) {
+  const hazardMultipliers = stored.simulator_situational_hazard_multipliers || {};
   return {
     first_correct_days: sanitizeReviewSetting(stored.first_correct_days, DEFAULT_REVIEW_SETTINGS.first_correct_days),
     wrong_retry_days: sanitizeReviewSetting(stored.wrong_retry_days, DEFAULT_REVIEW_SETTINGS.wrong_retry_days),
@@ -751,6 +763,15 @@ function sanitizeReviewSettings(stored = {}) {
     simulator_fast_similar_generation: sanitizeBooleanSetting(stored.simulator_fast_similar_generation, DEFAULT_REVIEW_SETTINGS.simulator_fast_similar_generation),
     simulator_tsumo_win_share_percent: sanitizePercentSetting(stored.simulator_tsumo_win_share_percent, DEFAULT_REVIEW_SETTINGS.simulator_tsumo_win_share_percent),
     simulator_other_win_hazard_percent: sanitizeOtherWinHazard(stored.simulator_other_win_hazard_percent),
+    simulator_enable_situational_hazard: sanitizeBooleanSetting(stored.simulator_enable_situational_hazard, DEFAULT_REVIEW_SETTINGS.simulator_enable_situational_hazard),
+    simulator_opponent_riichi_count: sanitizeCountSetting(stored.simulator_opponent_riichi_count, 0, 3),
+    simulator_opponent_two_meld_count: sanitizeCountSetting(stored.simulator_opponent_two_meld_count, 0, 3),
+    simulator_self_riichi: sanitizeBooleanSetting(stored.simulator_self_riichi, DEFAULT_REVIEW_SETTINGS.simulator_self_riichi),
+    simulator_situational_hazard_multipliers: Object.fromEntries(
+      Object.entries(DEFAULT_SITUATIONAL_HAZARD_MULTIPLIERS).map(([key, fallback]) => [
+        key, sanitizePositiveSetting(hazardMultipliers[key], fallback),
+      ])
+    ),
   };
 }
 
@@ -795,6 +816,17 @@ function formatDayBoundaryTime(value) {
 
 function sanitizeBooleanSetting(value, fallback) {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function sanitizeCountSetting(value, fallback, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(0, Math.floor(parsed)));
+}
+
+function sanitizePositiveSetting(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function sanitizePercentSetting(value, fallback) {
@@ -849,6 +881,8 @@ function renderReviewSettings() {
     "simulator-enable-calls": settings.simulator_enable_calls,
     "simulator-enable-other-win-stop": settings.simulator_enable_other_win_stop,
     "simulator-fast-similar-generation": settings.simulator_fast_similar_generation,
+    "simulator-enable-situational-hazard": settings.simulator_enable_situational_hazard,
+    "simulator-self-riichi": settings.simulator_self_riichi,
   };
   Object.entries(simulatorCheckboxes).forEach(([id, checked]) => {
     const input = $(id);
@@ -856,6 +890,18 @@ function renderReviewSettings() {
   });
   const tsumoShare = $("simulator-tsumo-win-share-percent");
   if (tsumoShare) tsumoShare.value = String(settings.simulator_tsumo_win_share_percent);
+  const situationalValues = {
+    "simulator-opponent-riichi-count": settings.simulator_opponent_riichi_count,
+    "simulator-opponent-two-meld-count": settings.simulator_opponent_two_meld_count,
+    "simulator-hazard-opponent-riichi": settings.simulator_situational_hazard_multipliers.opponent_riichi,
+    "simulator-hazard-opponent-double-riichi": settings.simulator_situational_hazard_multipliers.opponent_double_riichi,
+    "simulator-hazard-opponent-two-meld": settings.simulator_situational_hazard_multipliers.opponent_two_meld,
+    "simulator-hazard-self-riichi": settings.simulator_situational_hazard_multipliers.self_riichi,
+  };
+  Object.entries(situationalValues).forEach(([id, value]) => {
+    const input = $(id);
+    if (input) input.value = String(value);
+  });
   const hazardGrid = $("simulator-other-win-hazard-grid");
   if (hazardGrid) {
     hazardGrid.innerHTML = Array.from({ length: 6 }, (_, row) =>
@@ -895,6 +941,16 @@ function readReviewSettingsForm() {
     simulator_fast_similar_generation: $("simulator-fast-similar-generation").checked,
     simulator_tsumo_win_share_percent: $("simulator-tsumo-win-share-percent").value,
     simulator_other_win_hazard_percent: hazards,
+    simulator_enable_situational_hazard: $("simulator-enable-situational-hazard").checked,
+    simulator_opponent_riichi_count: $("simulator-opponent-riichi-count").value,
+    simulator_opponent_two_meld_count: $("simulator-opponent-two-meld-count").value,
+    simulator_self_riichi: $("simulator-self-riichi").checked,
+    simulator_situational_hazard_multipliers: {
+      opponent_riichi: $("simulator-hazard-opponent-riichi").value,
+      opponent_double_riichi: $("simulator-hazard-opponent-double-riichi").value,
+      opponent_two_meld: $("simulator-hazard-opponent-two-meld").value,
+      self_riichi: $("simulator-hazard-self-riichi").value,
+    },
   };
 }
 
@@ -1636,6 +1692,14 @@ function bindExport() {
     "simulator-enable-other-win-stop",
     "simulator-fast-similar-generation",
     "simulator-tsumo-win-share-percent",
+    "simulator-enable-situational-hazard",
+    "simulator-opponent-riichi-count",
+    "simulator-opponent-two-meld-count",
+    "simulator-self-riichi",
+    "simulator-hazard-opponent-riichi",
+    "simulator-hazard-opponent-double-riichi",
+    "simulator-hazard-opponent-two-meld",
+    "simulator-hazard-self-riichi",
   ].forEach((id) => {
     const input = $(id);
     if (!input) return;
@@ -1850,14 +1914,19 @@ async function analyzeWithWasm(handText, melds, payload, options = {}) {
     const memoized = getMemoizedWasmResult(memoKey);
     if (memoized) return memoized;
   }
-  const raw = await wasmAnalyze(buildSimulatorEnginePayload(
+  const enginePayload = buildSimulatorEnginePayload(
     handText, melds, payload, settings, mode, requestKey, includeYakuStats
-  ));
+  );
+  let raw = await wasmAnalyze(enginePayload);
+  const engineHasEvBreakdown = raw?.stats?.some((stat) => Array.isArray(stat.total_ev));
+  if (settings.simulator_enable_situational_hazard && (!raw?.success || !engineHasEvBreakdown)) {
+    raw = await wasmAnalyze(buildLegacySituationalEnginePayload(enginePayload, settings));
+  }
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
   if (raw.engine_version !== "0.9.13" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
-  const simulation = summarizeWasmResult(raw, payload.turn);
+  const simulation = summarizeWasmResult(raw, payload.turn, settings);
   simulation.settings_signature = simulatorSettingsSignature(settings);
   simulation.details_complete = includeYakuStats;
   simulation.estimate_profile = estimateProfile;
@@ -1879,6 +1948,11 @@ function simulatorSettingsSignature(settings = loadReviewSettings()) {
     enable_other_win_stop: settings.simulator_enable_other_win_stop,
     tsumo_win_share_percent: settings.simulator_tsumo_win_share_percent,
     other_win_hazard_percent: settings.simulator_other_win_hazard_percent,
+    enable_situational_hazard: settings.simulator_enable_situational_hazard,
+    opponent_riichi_count: settings.simulator_opponent_riichi_count,
+    opponent_two_meld_count: settings.simulator_opponent_two_meld_count,
+    self_riichi: settings.simulator_self_riichi,
+    situational_hazard_multipliers: settings.simulator_situational_hazard_multipliers,
   });
 }
 
@@ -1952,7 +2026,7 @@ async function refreshStoredProblemSimulatorStats(problem, container, answers = 
 
 function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, requestKey, includeYakuStats = true) {
   const turn = Math.min(18, Math.max(1, Number(payload.turn) || 1));
-  return {
+  const enginePayload = {
     __wasmRequestKey: requestKey,
     round_wind: tileIndex(payload.round_wind),
     seat_wind: tileIndex(payload.seat_wind),
@@ -1981,6 +2055,38 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     remaining_tiles: Math.min(70, Math.max(0, (18 - turn) * 4)),
     version: "0.9.13",
   };
+  if (settings.simulator_enable_situational_hazard) {
+    Object.assign(enginePayload, {
+      enable_situational_hazard: true,
+      opponent_riichi_count: settings.simulator_opponent_riichi_count,
+      opponent_two_meld_count: settings.simulator_opponent_two_meld_count,
+      self_riichi: settings.simulator_self_riichi,
+      hazard_multipliers: { ...settings.simulator_situational_hazard_multipliers },
+      enable_ev_breakdown: true,
+      deal_in_probability: Array(37).fill(0),
+      deal_in_value: Array(37).fill(0),
+      tenpai_payment: 1500,
+    });
+  }
+  return enginePayload;
+}
+
+function buildLegacySituationalEnginePayload(enginePayload, settings) {
+  const legacy = { ...enginePayload };
+  [
+    "enable_situational_hazard", "opponent_riichi_count", "opponent_two_meld_count",
+    "self_riichi", "hazard_multipliers", "enable_ev_breakdown",
+    "deal_in_probability", "deal_in_value", "tenpai_payment",
+  ].forEach((key) => delete legacy[key]);
+  const multipliers = settings.simulator_situational_hazard_multipliers;
+  let multiplier = settings.simulator_opponent_riichi_count >= 2
+    ? multipliers.opponent_double_riichi
+    : settings.simulator_opponent_riichi_count === 1 ? multipliers.opponent_riichi : 1;
+  multiplier *= multipliers.opponent_two_meld ** settings.simulator_opponent_two_meld_count;
+  if (settings.simulator_self_riichi) multiplier *= multipliers.self_riichi;
+  legacy.other_win_hazard = legacy.other_win_hazard.map((value) => Math.min(1, Math.max(0, value * multiplier)));
+  legacy.other_win_hazard[17] = legacy.other_win_hazard[16];
+  return legacy;
 }
 
 function calculateAnswerGaps(simulation, answers) {
@@ -2224,7 +2330,7 @@ function wasmAnalyze(payload) {
   return queued;
 }
 
-function summarizeWasmResult(raw, turn) {
+function summarizeWasmResult(raw, turn, settings = {}) {
   lastWasmMode = wasmActiveRequestMode || {
     degraded: false,
     fallbackReason: "",
@@ -2277,11 +2383,25 @@ function summarizeWasmResult(raw, turn) {
         .sort((a, b) => b.probability - a.probability)
       : [];
     const expectedScore = at(stat.exp_score);
+    const hasEngineEvBreakdown = Array.isArray(stat.total_ev);
+    const localEvBreakdown = settings.simulator_enable_situational_hazard && !hasEngineEvBreakdown;
+    const winEv = Array.isArray(stat.win_ev) ? at(stat.win_ev) : expectedScore;
+    const dealInEv = at(stat.deal_in_ev);
+    const tenpaiEv = hasEngineEvBreakdown
+      ? at(stat.tenpai_ev)
+      : localEvBreakdown
+        ? Math.max(0, at(stat.tenpai_prob) - at(stat.win_prob)) * 1500
+        : 0;
+    const totalEv = hasEngineEvBreakdown ? at(stat.total_ev) : winEv + dealInEv + tenpaiEv;
     const shapleyTotal = yakuContributions.reduce((sum, entry) => sum + entry.shapley, 0);
     return {
       tile: code(stat.tile),
-      metric: expectedScore,
+      metric: totalEv,
       expected_score: expectedScore,
+      win_ev: winEv,
+      deal_in_ev: dealInEv,
+      tenpai_ev: tenpaiEv,
+      total_ev: totalEv,
       win_probability: at(stat.win_prob),
       tenpai_probability: at(stat.tenpai_prob),
       call_probability: callProbability,
@@ -4156,7 +4276,10 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
             <th>聴牌率</th>
             <th>和了率</th>
             <th>副露和了率</th>
-            <th>期待値</th>
+            <th>和了EV</th>
+            <th>放銃EV</th>
+            <th>聴牌料EV</th>
+            <th>合計EV</th>
             <th>役別Shapley<br><small>共通上限 ${formatNumber(commonShapleyScale)}点</small></th>
           </tr>
         </thead>
@@ -4174,7 +4297,10 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
               <td>${formatProbability(row.tenpai_probability)}</td>
               <td>${formatProbability(row.win_probability)}</td>
               <td>${formatProbability(row.call_win_probability)}</td>
-              <td><b>${formatNumber(row.expected_score)}</b><small class="relative-score">${relative.toFixed(2)}%</small></td>
+              <td>${formatNumber(row.win_ev ?? row.expected_score)}</td>
+              <td>${formatNumber(row.deal_in_ev ?? 0)}</td>
+              <td>${formatNumber(row.tenpai_ev ?? 0)}</td>
+              <td><b>${formatNumber(row.total_ev ?? row.metric)}</b><small class="relative-score">${relative.toFixed(2)}%</small></td>
               <td class="shapley-cell">${renderYakuContributions(row, commonShapleyScale)}</td>
             </tr>`;
           }).join("")}

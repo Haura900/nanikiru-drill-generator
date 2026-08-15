@@ -131,8 +131,8 @@ button.danger { color: var(--red); }
 .simulator-option-grid label:nth-child(n+6) { grid-column: 1 / -1; }
 .simulator-rate-setting { display: flex; align-items: center; gap: 10px; max-width: 360px; margin: 12px 0; }
 .simulator-rate-setting input { width: 88px; margin-left: auto; }
-.hazard-settings { margin: 12px 0; }
-.hazard-settings summary { color: var(--green); font-weight: 800; cursor: pointer; }
+.hazard-settings, .situational-hazard-settings { margin: 12px 0; }
+.hazard-settings summary, .situational-hazard-settings summary { color: var(--green); font-weight: 800; cursor: pointer; }
 .hazard-table-wrap { max-width: 610px; overflow-x: auto; }
 .hazard-table { width: 100%; border-collapse: collapse; background: #fff; font-variant-numeric: tabular-nums; }
 .hazard-table th, .hazard-table td { padding: 6px 8px; border: 1px solid var(--line); text-align: right; }

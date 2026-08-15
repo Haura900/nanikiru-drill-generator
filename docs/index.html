@@ -362,6 +362,22 @@
           <label class="simulator-rate-setting">和了のうちツモの割合（%）
             <input id="simulator-tsumo-win-share-percent" type="number" min="0" max="100" step="1">
           </label>
+          <details class="situational-hazard-settings">
+            <summary>対戦状況によるハザード補正（既定OFF）</summary>
+            <p class="description">ONのときだけ、被リーチ・被2副露・自分リーチに応じて巡目別の他家和了ハザードへ倍率を掛けます。OFFなら従来の計算入力を変更しません。</p>
+            <label class="inline-option"><input id="simulator-enable-situational-hazard" type="checkbox"> 状況別ハザード補正とEV内訳を有効にする</label>
+            <div class="simulator-option-grid">
+              <label>リーチ中の他家人数 <input id="simulator-opponent-riichi-count" type="number" min="0" max="3" step="1"></label>
+              <label>2副露以上の他家人数 <input id="simulator-opponent-two-meld-count" type="number" min="0" max="3" step="1"></label>
+              <label><input id="simulator-self-riichi" type="checkbox"> 自分がリーチ中</label>
+            </div>
+            <div class="simulator-option-grid">
+              <label>被1リーチ倍率 <input id="simulator-hazard-opponent-riichi" type="number" min="0.01" step="0.01"></label>
+              <label>被2リーチ以上倍率 <input id="simulator-hazard-opponent-double-riichi" type="number" min="0.01" step="0.01"></label>
+              <label>被2副露倍率（1人ごと） <input id="simulator-hazard-opponent-two-meld" type="number" min="0.01" step="0.01"></label>
+              <label>自分リーチ倍率 <input id="simulator-hazard-self-riichi" type="number" min="0.01" step="0.01"></label>
+            </div>
+          </details>
           <details class="hazard-settings">
             <summary>他家和了ハザードを巡目別に設定</summary>
             <p class="description">その巡目まで局が続いた条件で、他家3人の誰かが和了する確率です。</p>

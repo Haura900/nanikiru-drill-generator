@@ -581,6 +581,16 @@ test("legacy cloud settings load with defaults for newly added settings", async 
       0.02, 0.08, 0.29, 0.78, 1.70, 3.05, 4.67, 6.44, 8.23,
       9.75, 11.08, 12.12, 12.76, 13.12, 13.23, 13.09, 11.70, 11.70,
     ],
+    simulator_enable_situational_hazard: false,
+    simulator_opponent_riichi_count: 0,
+    simulator_opponent_two_meld_count: 0,
+    simulator_self_riichi: false,
+    simulator_situational_hazard_multipliers: {
+      opponent_riichi: 1.65,
+      opponent_double_riichi: 2.1,
+      opponent_two_meld: 1.35,
+      self_riichi: 1.18,
+    },
   });
   expect(stored.adminCount).toBe("9");
   expect(stored.genreOrder).toEqual(["旧設定"]);
@@ -600,29 +610,62 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
       simulator_enable_other_win_stop: true,
       simulator_tsumo_win_share_percent: 35,
       simulator_other_win_hazard_percent: Array(18).fill(5),
+      simulator_enable_situational_hazard: true,
+      simulator_opponent_riichi_count: 2,
+      simulator_opponent_two_meld_count: 1,
+      simulator_self_riichi: true,
+      simulator_situational_hazard_multipliers: {
+        opponent_riichi: 1.7,
+        opponent_double_riichi: 2.2,
+        opponent_two_meld: 1.4,
+        self_riichi: 1.2,
+      },
       quiz_random_transform: false,
     }));
     const settings = loadReviewSettings();
     const scene = { turn: 6, round_wind: "1z", seat_wind: "2z", dora: "", objective: 2 };
     const mode = { flags: { enable_shanten_down: false, enable_tegawari: true } };
     const captured = buildSimulatorEnginePayload("123m123p123s11122z", [], scene, settings, mode, "test");
+    const legacyFallback = buildLegacySituationalEnginePayload(captured, settings);
+    const legacyCompatible = buildSimulatorEnginePayload(
+      "123m123p123s11122z", [], scene,
+      { ...settings, simulator_enable_situational_hazard: false }, mode, "legacy-test"
+    );
     const lightweight = buildSimulatorEnginePayload("123m123p123s11122z", [], scene, settings, mode, "test", false);
     const probabilities = Array(19).fill(0);
     probabilities[6] = 0.2;
+    const tenpaiProbabilities = Array(19).fill(0);
+    tenpaiProbabilities[6] = 0.5;
     const scores = Array(19).fill(0);
     scores[6] = 1200;
+    const dealInEv = Array(19).fill(0);
+    dealInEv[6] = -240;
+    const tenpaiEv = Array(19).fill(0);
+    tenpaiEv[6] = 300;
+    const totalEv = Array(19).fill(0);
+    totalEv[6] = 1260;
     const simulation = summarizeWasmResult({
       shanten: { all: 1 },
       stats: [{
-        tile: 0, shanten: 1, exp_score: scores, win_prob: probabilities, tenpai_prob: probabilities,
+        tile: 0, shanten: 1, exp_score: scores, win_prob: probabilities, tenpai_prob: tenpaiProbabilities,
         call_prob: probabilities, call_win_prob: probabilities, necessary_tiles: [], call_tile_stats: [],
         yaku_stats: [{
           yaku: 2, occurrence_prob: probabilities,
           shapley_score: scores, called_occurrence_prob: probabilities, called_shapley_score: scores,
         }],
+        win_ev: scores, deal_in_ev: dealInEv, tenpai_ev: tenpaiEv, total_ev: totalEv,
       }],
     }, 6);
-    return { captured, lightweight, row: simulation.rows[0] };
+    const localSimulation = summarizeWasmResult({
+      shanten: { all: 1 },
+      stats: [{
+        tile: 0, shanten: 1, exp_score: scores, win_prob: probabilities,
+        tenpai_prob: tenpaiProbabilities, call_prob: probabilities,
+        call_win_prob: probabilities, necessary_tiles: [], call_tile_stats: [], yaku_stats: [],
+      }],
+    }, 6, settings);
+    return { captured, legacyFallback, legacyCompatible, lightweight,
+      row: simulation.rows[0], localRow: localSimulation.rows[0] };
   });
   expect(result.captured.enable_reddora).toBe(false);
   expect(result.captured.enable_uradora).toBe(true);
@@ -636,8 +679,55 @@ test("simulator settings are forwarded to WASM and Shapley output is parsed", as
   expect(result.captured.ron_rate).toBeCloseTo(0.65, 10);
   expect(result.captured.remaining_tiles).toBe(48);
   expect(result.captured.other_win_hazard[0]).toBeCloseTo(0.05, 10);
+  expect(result.captured.enable_situational_hazard).toBe(true);
+  expect(result.captured.opponent_riichi_count).toBe(2);
+  expect(result.captured.opponent_two_meld_count).toBe(1);
+  expect(result.captured.self_riichi).toBe(true);
+  expect(result.captured.hazard_multipliers.opponent_double_riichi).toBeCloseTo(2.2, 10);
+  expect(result.captured.enable_ev_breakdown).toBe(true);
+  expect(result.captured.deal_in_probability).toHaveLength(37);
+  expect(result.legacyFallback.enable_situational_hazard).toBeUndefined();
+  expect(result.legacyFallback.enable_ev_breakdown).toBeUndefined();
+  expect(result.legacyFallback.other_win_hazard[0]).toBeGreaterThan(result.captured.other_win_hazard[0]);
+  expect(result.legacyCompatible.enable_situational_hazard).toBeUndefined();
+  expect(result.legacyCompatible.enable_ev_breakdown).toBeUndefined();
+  expect(result.row.win_ev).toBe(1200);
+  expect(result.row.deal_in_ev).toBe(-240);
+  expect(result.row.tenpai_ev).toBe(300);
+  expect(result.row.total_ev).toBe(1260);
+  expect(result.row.metric).toBe(1260);
+  expect(result.localRow.win_ev).toBe(1200);
+  expect(result.localRow.tenpai_ev).toBe(450);
+  expect(result.localRow.total_ev).toBe(1650);
   expect(result.row.yaku_contributions[0].name).toBe("立直");
   expect(result.row.call_probability).toBeCloseTo(0.2, 10);
+});
+
+test("situational EV runs against the bundled legacy WASM through the compatibility path", async ({ page }) => {
+  test.setTimeout(60000);
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(async () => {
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      simulator_enable_situational_hazard: true,
+      simulator_opponent_riichi_count: 1,
+      simulator_opponent_two_meld_count: 0,
+      simulator_self_riichi: false,
+      simulator_enable_calls: false,
+      simulator_enable_shanten_down: false,
+      simulator_enable_tegawari: false,
+      simulator_fast_similar_generation: false,
+      quiz_random_transform: false,
+    }));
+    return analyzeWithWasm("56m5689p44667s777z", [], {
+      turn: 6, round_wind: "1z", seat_wind: "2z", dora: "", objective: 2,
+    }, { includeYakuStats: false });
+  });
+  expect(result.rows.length).toBeGreaterThan(0);
+  expect(result.rows[0].total_ev).toBeCloseTo(
+    result.rows[0].win_ev + result.rows[0].deal_in_ev + result.rows[0].tenpai_ev,
+    8
+  );
+  expect(result.rows[0].tenpai_ev).toBeGreaterThanOrEqual(0);
 });
 
 test("WASM fallback preserves shanten-down before disabling both search options", async ({ page }) => {
