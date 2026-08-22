@@ -43,7 +43,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         calc_yaku_stats: false,
         calc_shapley_stats: false,
         ron_rate: 0,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -90,7 +90,7 @@ test("large tegawari graph completes without exhausting the WASM call stack", as
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 70,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -136,7 +136,7 @@ test("a legal ron tile is not exposed as a chi hand-change", async ({ page }) =>
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 40,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -183,7 +183,7 @@ test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) 
         calc_shapley_stats: true,
         ron_rate: 0.7,
         remaining_tiles: 48,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -216,7 +216,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       calc_yaku_stats: false,
       calc_shapley_stats: false,
       ron_rate: 0,
-      version: "0.9.13",
+      version: "0.9.14",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;
