@@ -427,6 +427,12 @@ test("answered problem opens selected in management and can be edited", async ({
   expect(edited.answers).toEqual(["2m"]);
   expect(edited.genre).toBe("編集後");
   expect(edited.simulator.version).toBe("edit-test");
+
+  await page.locator("#preview-hand-input").fill("123456789m12348z");
+  await page.locator("#preview-answer-input").fill("1m");
+  await page.locator("#save-preview-problem").click();
+  await expect(page.locator("#preview-edit-message")).toContainText("存在しない牌");
+  expect(await page.evaluate(() => problems[0].hand)).toBe("223456789m12344p");
 });
 
 test("similar-problem transforms run in the browser", async ({ page }) => {
@@ -1240,6 +1246,24 @@ test("similar-problem conditions use source tolerance, rank and fixed next-worse
   expect(result.tiedBest.boundary_tile).toBe("7m");
   expect(result.tiedCandidate.separation_accepted).toBe(false);
   expect(result.tiedCandidate.accepted).toBe(false);
+});
+
+test("cloud problem repair converts legacy fields without discarding the record", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => window.NanikiruSaveData.repairProblem({
+    id: "old-id",
+    genre: 123,
+    hand: "123m123p123s11122z",
+    answer: "3m 6p",
+    source_id: "bad id",
+    melds: "legacy",
+  }, "cloud-id"));
+  expect(result.value).toMatchObject({
+    id: "cloud-id", genre: "123", hand: "123m123p123s11122z", answers: ["3m", "6p"],
+  });
+  expect(result.value.source_id).toBeUndefined();
+  expect(result.value.melds).toBeUndefined();
+  expect(result.changes.length).toBeGreaterThan(0);
 });
 
 test("save data is compressed and remains backward compatible", async ({ page }) => {

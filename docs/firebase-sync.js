@@ -59,6 +59,12 @@ function messageFor(error) {
   return error?.message || "同期に失敗しました";
 }
 
+function cloudRepairMessage(result) {
+  if (!result) return "";
+  return result.unrecoverable ? `クラウドの問題データを修復しました（${result.repaired}件、確認が必要な空問題 ${result.unrecoverable}件）。`
+    : `クラウドの問題データを修復しました（${result.repaired}件）。`;
+}
+
 function waitForSaveApi() {
   if (window.NanikiruSaveData) return Promise.resolve(window.NanikiruSaveData);
   return new Promise((resolve) => window.addEventListener("nanikiru-app-ready", () => resolve(window.NanikiruSaveData), { once: true }));
@@ -340,6 +346,46 @@ async function syncNow() {
   return syncPromise;
 }
 
+async function repairCloudProblems() {
+  if (!state.user || !navigator.onLine) throw new Error("ログインしてオンラインの状態で実行してください。");
+  const proceed = window.confirm("クラウド上の問題データを検査し、古い形式や不正な値を現行形式へ修復します。修復できないレコードは、内容を失わないよう「復旧済み（要確認）」の空問題に置き換えます。続けますか？");
+  if (!proceed) return null;
+  emit({ syncing: true, status: "クラウド問題データを検査・修復中", error: "" });
+  const api = await waitForSaveApi();
+  const snapshot = await getDocs(collection(db, "users", state.user.uid, "problems"));
+  const repairs = [];
+  let unrecoverable = 0;
+  snapshot.docs.forEach((item) => {
+    const record = item.data();
+    if (record.deleted) return;
+    let value;
+    try { value = JSON.parse(record.payload); }
+    catch { value = null; }
+    let repaired;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      repaired = { value: { id: item.id, genre: "復旧済み（要確認）", hand: "", answers: [], note: "クラウド上の問題データを復旧できなかったため、確認用の空問題に置き換えました。", prompt_note: "" }, changes: ["問題本体を読み取れませんでした"] };
+      unrecoverable++;
+    } else {
+      try { repaired = api.repairProblem(value, item.id); }
+      catch { repaired = { value: { id: item.id, genre: "復旧済み（要確認）", hand: "", answers: [], note: "クラウド上の問題データを復旧できなかったため、確認用の空問題に置き換えました。", prompt_note: "" }, changes: ["問題本体を読み取れませんでした"] }; unrecoverable++; }
+    }
+    const original = value && typeof value === "object" ? JSON.stringify(value) : null;
+    if (original !== JSON.stringify(repaired.value)) repairs.push({ id: item.id, record, value: repaired.value });
+  });
+  if (repairs.length) {
+    await ensureCatalog(state.user.uid, repairs.map((item) => item.id));
+    for (const item of repairs) {
+      const version = nextMutationVersion(item.record, "modifiedAt");
+      await setDoc(problemRef(state.user.uid, item.id), problemRecord(item.id, item.value, { ...version, deleted: false }));
+    }
+  }
+  const result = { repaired: repairs.length, unrecoverable };
+  emit({ syncing: false, status: "クラウド問題データの検査が完了しました", error: "" });
+  await syncNow();
+  window.alert(cloudRepairMessage(result));
+  return result;
+}
+
 async function signIn() {
   try { await signInWithPopup(auth, new GoogleAuthProvider()); }
   catch (error) { emit({ error: messageFor(error) }); }
@@ -412,7 +458,8 @@ function renderState() {
 function bindUi() {
   document.getElementById("cloud-login-button")?.addEventListener("click", signIn);
   document.getElementById("cloud-logout-button")?.addEventListener("click", signOut);
-  document.getElementById("cloud-sync-now")?.addEventListener("click", () => syncNow().catch(() => {})); renderState();
+  document.getElementById("cloud-sync-now")?.addEventListener("click", () => syncNow().catch(() => {}));
+  document.getElementById("cloud-repair-problems")?.addEventListener("click", () => repairCloudProblems().catch(handleError)); renderState();
 }
 
 async function initialize() {
@@ -440,7 +487,7 @@ async function initialize() {
 window.addEventListener("online", () => { if (state.user) syncNow().catch(() => {}); });
 window.addEventListener("offline", () => emit({ status: state.user ? "オフライン・未同期" : state.status }));
 window.NanikiruCloud = {
-  signIn, signOut, syncNow, scheduleUpload, deleteCloudData, markProblemDirty, markProgressDirty, markSettingsDirty, markAllDirty,
+  signIn, signOut, syncNow, repairCloudProblems, scheduleUpload, deleteCloudData, markProblemDirty, markProgressDirty, markSettingsDirty, markAllDirty,
   getState: () => ({ ...state }), subscribe(listener) { listeners.add(listener); listener({ ...state }); return () => listeners.delete(listener); },
 };
 window.NANIKIRU_CLOUD_READY = initialAuthPromise;

@@ -1487,6 +1487,14 @@ async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
   if (!Array.isArray(changedIds) || !Array.isArray(deletedIds) || (!changedIds.length && !deletedIds.length)) {
     throw new Error("saveProblemsにはchangedIdsまたはdeletedIdsの指定が必要です。");
   }
+  // 保存経路を一か所に集約して正規化する。編集画面以外（類題生成・一括更新）
+  // から入った問題も、クラウドへ送る前に同じ検査を必ず受ける。
+  const changed = new Set(changedIds);
+  const ids = new Set();
+  problems = problems.map((problem) => {
+    const normalized = changed.has(problem.id) ? normalizeProblemForStorage(problem) : problem;
+    return validateProblemObject(normalized, ids);
+  });
   localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
   changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
   deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
@@ -3196,7 +3204,7 @@ async function saveEditedProblem(problem) {
     if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
       throw new Error("指定解答は手牌に含まれる牌を指定してください。");
     }
-    const candidate = {
+    let candidate = {
       ...problem,
       hand: tilesToMpszClient(hand),
       answers,
@@ -3205,6 +3213,7 @@ async function saveEditedProblem(problem) {
       note: $("preview-note").value.trim(),
       prompt_note: $("preview-prompt-note").value.trim(),
     };
+    candidate = normalizeProblemForStorage(candidate);
     const shouldUpdateRelated = !problem.source_id && Boolean($("preview-update-related")?.checked);
     const relatedProblems = shouldUpdateRelated
       ? problems.filter((item) => item.source_id === problem.id)
@@ -3538,6 +3547,103 @@ function validateProblemObject(problem, ids = new Set()) {
   return { ...problem, id, genre, hand, note, prompt_note: promptNote, answers: [...problem.answers] };
 }
 
+function strictTilesFromMpsz(value, label) {
+  const compact = String(value ?? "").toLowerCase().replace(/\s+/g, "");
+  if (!compact || !/^(?:[0-9]+[mpsz])+$/.test(compact)) throw new Error(`${label}の入力形式が不正です。`);
+  const tiles = parseMpsz(compact);
+  if (!tiles.length || tiles.some((tile) => {
+    const rank = Number(tile[0]);
+    return tile[1] === "z" ? rank < 1 || rank > 7 : rank < 0 || rank > 9;
+  })) throw new Error(`${label}に存在しない牌があります。`);
+  return tiles;
+}
+
+function normalizeMeldsForStorage(problem) {
+  const source = Array.isArray(problem.melds)
+    ? problem.melds
+    : (problem.melds_text ? parseMeldsClient(String(problem.melds_text)) : []);
+  if (source.length > 4) throw new Error("副露は4組までです。");
+  return source.map((meld, index) => {
+    if (!meld || typeof meld !== "object" || !Array.isArray(meld.tiles) || meld.tiles.length !== 3) throw new Error(`副露${index + 1}組目の形式が不正です。`);
+    const tiles = meld.tiles.map((tile) => {
+      if (typeof tile !== "string" || !/^[0-9][mpsz]$/.test(tile)) throw new Error(`副露${index + 1}組目に不正な牌があります。`);
+      return strictTilesFromMpsz(tile, `副露${index + 1}組目`)[0];
+    });
+    const parsed = parseMeldsClient(tilesToMpszClient(tiles));
+    if (parsed.length !== 1) throw new Error(`副露${index + 1}組目の形式が不正です。`);
+    return parsed[0];
+  });
+}
+
+function normalizeProblemForStorage(problem) {
+  const id = String(problem?.id || "");
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("問題IDが不正です。");
+  const melds = normalizeMeldsForStorage(problem);
+  const hand = strictTilesFromMpsz(problem.hand, "手牌");
+  const expectedTiles = 14 - melds.length * 3;
+  if (hand.length !== expectedTiles) throw new Error(`副露${melds.length}組では手牌を${expectedTiles}枚にしてください。`);
+  validateCombinedTileCounts(hand, melds);
+  if (!Array.isArray(problem.answers)) throw new Error("指定解答の形式が不正です。");
+  const answers = [...new Set(problem.answers.map((answer) => {
+    if (typeof answer !== "string" || !/^[0-9][mpsz]$/.test(answer)) throw new Error("指定解答に不正な牌があります。");
+    return strictTilesFromMpsz(answer, "指定解答")[0];
+  }).map(normalizePhysicalTile))];
+  if (!answers.length) throw new Error("指定解答を入力してください。");
+  if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) throw new Error("指定解答は手牌に含まれる牌を指定してください。");
+  const value = validateProblemObject({
+    ...problem,
+    id,
+    hand: tilesToMpszClient(hand),
+    melds,
+    melds_text: melds.map((meld) => meld.mpsz).join(" "),
+    answers,
+    primary_answer: answers[0],
+    genre: String(problem.genre || "未分類").trim() || "未分類",
+    note: String(problem.note || "").trim(),
+    prompt_note: String(problem.prompt_note || "").trim(),
+  });
+  try {
+    if (JSON.stringify(value).length > 750000) throw new Error("問題データが大きすぎます。");
+  } catch (error) {
+    if (error?.message) throw error;
+    throw new Error("問題データを保存できる形式に変換できません。");
+  }
+  return value;
+}
+
+// 以前の版は問題本体の細かな形式までクラウド側で検査していなかったため、
+// 古い端末から送られたレコードが新しい検査で止まることがある。内容を捨てずに
+// 現行形式へ寄せるための、クラウド復旧専用の最小限の変換である。
+function repairProblemObject(problem, expectedId) {
+  const changes = [];
+  const source = problem && typeof problem === "object" && !Array.isArray(problem) ? { ...problem } : {};
+  if (source.id !== expectedId) { source.id = expectedId; changes.push("問題IDをクラウドのIDに合わせました"); }
+  const text = (key, fallback, maximum) => {
+    let value = source[key];
+    if (value == null) value = fallback;
+    if (typeof value !== "string") { value = String(value); changes.push(`${key}を文字列に変換しました`); }
+    if (value.length > maximum) { value = value.slice(0, maximum); changes.push(`${key}を上限まで短縮しました`); }
+    source[key] = value;
+  };
+  text("genre", "未分類", 100); text("hand", "", 100); text("note", "", 10000); text("prompt_note", "", 2000);
+  let answers = source.answers;
+  if (!Array.isArray(answers)) answers = source.answer ?? source.primary_answer ?? [];
+  if (typeof answers === "string") answers = answers.match(/[0-9][mpsz]/g) || [];
+  if (!Array.isArray(answers)) answers = [];
+  const safeAnswers = answers.filter((answer) => typeof answer === "string" && /^[0-9][mpsz]$/.test(answer)).slice(0, 34);
+  if (JSON.stringify(safeAnswers) !== JSON.stringify(answers)) changes.push("指定解答から不正な値を除外しました");
+  source.answers = safeAnswers;
+  if (source.source_id != null && !/^[A-Za-z0-9_-]{1,128}$/.test(String(source.source_id))) { delete source.source_id; changes.push("不正な加工元IDを除外しました"); }
+  if (source.melds != null && (!Array.isArray(source.melds) || source.melds.length > 4 || source.melds.some((meld) => !meld || typeof meld !== "object" || String(meld.name || "").length > 100))) {
+    delete source.melds; changes.push("不正な副露情報を除外しました");
+  }
+  if (!Object.keys(source).length) {
+    source.id = expectedId; source.genre = "復旧済み（要確認）"; source.hand = ""; source.answers = []; source.note = "クラウド上の問題データを復旧しました。内容を確認してください。"; source.prompt_note = "";
+    changes.push("読み取れない問題を確認用の空問題として復旧しました");
+  }
+  return { value: validateProblemObject(source), changes };
+}
+
 async function applySaveData(data, options = {}) {
   const normalized = normalizeSaveData(data);
   return withCloudUploadSuppressed(async () => {
@@ -3604,6 +3710,7 @@ function exposeSaveDataApi() {
     buildSaveData, encodeSaveData, encodeCurrentSave, decodeSaveData, applySaveData,
     applyEncodedSave, hasMeaningfulLocalData, withCloudUploadSuppressed, clearActiveAppData,
     getProblem: (problemId) => problems.find((problem) => problem.id === problemId) || null,
+    repairProblem: (problem, expectedId) => repairProblemObject(problem, expectedId),
     getProgress: (problemId) => loadHistory()[problemId] || null,
     getSettings: () => ({ reviewSettings: loadReviewSettings(), adminCount: loadAdminCount(), genreOrder: loadGenreOrder() }),
     applyCloudRecords,
