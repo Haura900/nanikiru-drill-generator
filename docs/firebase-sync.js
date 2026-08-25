@@ -11,7 +11,7 @@ import {
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
   findLocalIdsMissingFromCatalog,
-} from "./cloud-sync-core.js?v=20260805-2";
+} from "./cloud-sync-core.js?v=20260825-1";
 import * as problemStore from "./problem-store.js?v=20260825-1";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";

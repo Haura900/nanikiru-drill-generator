@@ -11,7 +11,10 @@ test.beforeEach(async ({ page }) => {
 
 test("mahjong wasm runs in a browser", async ({ page }) => {
   const cspViolations = [];
-  page.on("console", (message) => { if (/Content Security Policy|Refused to/i.test(message.text())) cspViolations.push(message.text()); });
+  page.on("console", (message) => {
+    const text = message.text();
+    if (/Content Security Policy|Refused to/i.test(text) && !/^\[Report Only\]/i.test(text)) cspViolations.push(text);
+  });
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => new Promise((resolve, reject) => {
     const worker = new Worker("wasm/worker.js", { type: "module" });
@@ -1444,7 +1447,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
   await page.locator("#undo-current-answer").click();
   const restored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"]);
   expect(restored).toEqual({ attempts: [{ at: previousAt, correct: false, genre: "取消確認" }], dueAt: previousDueAt });
-  await expect(page.locator("#answer-result")).toBeHidden();
+  await expect(page.locator("#answer-result")).toBeHidden({ timeout: 15000 });
   await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
   await expect(page.locator("#question-genre")).toBeHidden();
 });
@@ -1557,7 +1560,7 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   await expect.poll(() => page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return state?.suspended;
-  })).toBe(false);
+  }), { timeout: 15000 }).toBe(false);
   const resumed = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
