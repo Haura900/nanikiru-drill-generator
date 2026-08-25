@@ -11,6 +11,7 @@ import {
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
 } from "./cloud-sync-core.js?v=20260805-2";
+import * as problemStore from "./problem-store.js?v=20260825-1";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
 const BOUND_UID_KEY = "nanikiru-bound-uid-v1";
@@ -41,8 +42,42 @@ const deviceId = (() => {
   return value;
 })();
 
-const readObject = (key) => { try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; } };
-const writeObject = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+const mutationKeys = new Map([
+  [DIRTY_PROBLEMS_KEY, ["problem", "dirty"]], [DIRTY_PROGRESS_KEY, ["progress", "dirty"]],
+  [PROBLEM_VERSIONS_KEY, ["problem", "version"]], [PROGRESS_VERSIONS_KEY, ["progress", "version"]],
+]);
+const mutationCache = { problem: new Map(), progress: new Map() };
+let mutationWriteError = null;
+function readObject(key) {
+  const descriptor = mutationKeys.get(key);
+  if (descriptor) {
+    const [kind, field] = descriptor; const result = {};
+    mutationCache[kind].forEach((value, id) => { if (field === "version" || value.dirty) result[id] = value.version; });
+    return result;
+  }
+  try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
+}
+function writeObject(key, value) {
+  const descriptor = mutationKeys.get(key);
+  if (!descriptor) { localStorage.setItem(key, JSON.stringify(value)); return; }
+  const [kind, field] = descriptor; const cache = mutationCache[kind]; const next = value || {};
+  const ids = new Set([...cache.keys(), ...Object.keys(next)]);
+  ids.forEach((id) => {
+    const old = cache.get(id);
+    const version = field === "version" ? next[id] : (next[id] || old?.version);
+    const dirty = field === "dirty" ? Boolean(next[id]) : Boolean(old?.dirty);
+    if (!version) { cache.delete(id); problemStore.putMutation(kind, id, null, false).catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); }); return; }
+    const entry = { version, dirty }; cache.set(id, entry);
+    problemStore.putMutation(kind, id, version, dirty).catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); });
+  });
+}
+async function initializeMutationCache() {
+  await problemStore.initialize();
+  for (const kind of ["problem", "progress"]) {
+    const rows = await problemStore.loadMutations(kind);
+    rows.forEach((row) => mutationCache[kind].set(row.id, { version: row.version, dirty: row.dirty }));
+  }
+}
 const hasDirty = () => Object.keys(readObject(DIRTY_PROBLEMS_KEY)).length > 0 || Object.keys(readObject(DIRTY_PROGRESS_KEY)).length > 0 || Boolean(localStorage.getItem(DIRTY_SETTINGS_KEY));
 
 function emit(patch = {}) {
@@ -184,6 +219,8 @@ async function uploadRecord({ uid, id, local, ref, chooser, timeField, dirtyKey,
 }
 
 async function syncDirty(uid) {
+  await problemStore.flush();
+  if (mutationWriteError) throw mutationWriteError;
   const api = await waitForSaveApi();
   if (localStorage.getItem(REPLACE_CLOUD_KEY) === "1") {
     const catalog = await getDoc(catalogRef(uid));
@@ -464,6 +501,13 @@ function bindUi() {
 
 async function initialize() {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindUi, { once: true }); else bindUi();
+  try { await initializeMutationCache(); }
+  catch (error) {
+    console.error("IndexedDB initialization failed; sync mutations were not discarded", error);
+    emit({ ready: true, configured: false, status: "ローカル保存を初期化できませんでした", error: messageFor(error) });
+    initialAuthResolved();
+    return;
+  }
   if (!isFirebaseConfigured()) { emit({ ready: true, configured: false, status: "クラウド同期は未設定です" }); initialAuthResolved(); return; }
   try {
     const app = initializeApp(firebaseConfig);

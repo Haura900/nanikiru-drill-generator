@@ -117,7 +117,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderAdminCount();
   renderReviewSettings();
   renderBuildVersion();
-  await loadProblems();
+  try {
+    await loadProblems();
+  } catch (error) {
+    console.error("Problem storage initialization failed", error);
+    const message = document.createElement("p");
+    message.className = "message error";
+    message.textContent = `保存済みの問題を読み込めませんでした。データは削除されていません。${error.message}`;
+    document.querySelector("main")?.prepend(message);
+    return;
+  }
   exposeSaveDataApi();
   window.dispatchEvent(new CustomEvent("nanikiru-app-ready"));
   document.getElementById("nav").classList.remove("hidden");
@@ -1456,20 +1465,13 @@ function formatBarValue(value) {
 async function loadProblems() {
   problems = [];
   try {
-    const stored = localStorage.getItem(PROBLEMS_KEY);
-    if (stored) {
-      const data = JSON.parse(stored);
-      if (Array.isArray(data)) {
-        problems = data;
-      } else if (Array.isArray(data.problems)) {
-        problems = data.problems;
-      }
-      const loadedIds = new Set();
-      problems = problems.map((problem) => validateProblemObject(problem, loadedIds));
-    }
+    await window.NanikiruProblemStore.initialize();
+    const data = await window.NanikiruProblemStore.loadAll();
+    const loadedIds = new Set();
+    problems = data.map((problem) => validateProblemObject(problem, loadedIds));
   } catch (error) {
     console.error("Failed to load problems:", error);
-    problems = [];
+    throw new Error(`問題データを読み込めませんでした。${error.message}`);
   }
   if (!localStorage.getItem(GENRE_ORDER_KEY)) {
     const ordered = [...problems]
@@ -1495,7 +1497,17 @@ async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
     const normalized = changed.has(problem.id) ? normalizeProblemForStorage(problem) : problem;
     return validateProblemObject(normalized, ids);
   });
-  localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+  const changedProblems = problems
+    .map((problem, order) => ({ problem, order }))
+    .filter(({ problem }) => changed.has(problem.id));
+  try {
+    await window.NanikiruProblemStore.upsertMany(changedProblems);
+    await window.NanikiruProblemStore.removeMany(deletedIds);
+    await window.NanikiruProblemStore.flush();
+  } catch (error) {
+    console.error("Failed to save problems to IndexedDB:", error);
+    throw new Error(`問題を保存できませんでした。${error.message}`);
+  }
   changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
   deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
 }
@@ -3384,6 +3396,7 @@ async function resetAllData() {
   if (!confirm(prompt)) return;
   try {
     if (signedIn) await cloud.deleteCloudData();
+    await window.NanikiruProblemStore.clear();
     localStorage.clear();
     problems = [];
     location.reload();
@@ -3648,7 +3661,7 @@ async function applySaveData(data, options = {}) {
   const normalized = normalizeSaveData(data);
   return withCloudUploadSuppressed(async () => {
     problems = normalized.p;
-    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+    await window.NanikiruProblemStore.replaceAll(problems);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(normalized.h || {}));
     localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(normalized.s || DEFAULT_REVIEW_SETTINGS));
     localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || DEFAULT_ADMIN_COUNT))));
@@ -3701,7 +3714,8 @@ async function withCloudUploadSuppressed(callback) {
 }
 
 function clearActiveAppData() {
-  [PROBLEMS_KEY, HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY, GENRE_ORDER_KEY].forEach((key) => localStorage.removeItem(key));
+  [HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY, GENRE_ORDER_KEY].forEach((key) => localStorage.removeItem(key));
+  window.NanikiruProblemStore?.clear().catch((error) => console.error("Failed to clear IndexedDB problems", error));
   problems = [];
 }
 
@@ -3736,7 +3750,10 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
       if (record.deleted) delete history[record.problemId];
       else history[record.problemId] = record.value;
     });
-    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+    const changed = new Set(problemRecords.filter((record) => !record.deleted).map((record) => record.problemId));
+    await window.NanikiruProblemStore.upsertMany(problems.map((problem, order) => ({ problem, order })).filter(({ problem }) => changed.has(problem.id)));
+    await window.NanikiruProblemStore.removeMany(problemRecords.filter((record) => record.deleted).map((record) => record.problemId));
+    await window.NanikiruProblemStore.flush();
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     if (settingsRecord) {
       const safeSettings = sanitizeReviewSettings(settingsRecord.reviewSettings || {});
