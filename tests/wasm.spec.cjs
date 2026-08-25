@@ -1440,6 +1440,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
   }, { previousAt, previousDueAt });
 
   await page.goto("http://127.0.0.1:18765/");
+  await page.waitForFunction(() => window.NanikiruSaveData);
   await page.locator("#hand button.tile[data-tile='2m']").click();
   await expect(page.locator("#undo-current-answer")).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"].attempts)).toHaveLength(2);
@@ -1534,6 +1535,7 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   }, { attempts });
 
   await page.goto("http://127.0.0.1:18765/");
+  await page.waitForFunction(() => window.NanikiruSaveData);
   expect(await page.evaluate(() => wrongTransitionCount({ attempts: [
     { correct: false }, { correct: false }, { correct: true }, { correct: false }, { correct: false },
   ] }))).toBe(1);
