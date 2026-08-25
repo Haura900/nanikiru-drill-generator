@@ -129,6 +129,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   exposeSaveDataApi();
   window.dispatchEvent(new CustomEvent("nanikiru-app-ready"));
+  try {
+    await window.NANIKIRU_CLOUD_READY;
+  } catch (error) {
+    console.error("Initial cloud reconciliation failed", error);
+  }
   document.getElementById("nav").classList.remove("hidden");
   showView("quiz");
   maybeShowBackupPrompt();
