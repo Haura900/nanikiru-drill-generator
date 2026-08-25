@@ -11,6 +11,7 @@ const LEGACY_PROGRESS_VERSIONS_KEY = "nanikiru-progress-versions-v2";
 
 let database;
 let opened;
+let initialized;
 let writeQueue = Promise.resolve();
 
 function idbError(event, fallback) { return event?.target?.error || new Error(fallback); }
@@ -85,31 +86,35 @@ async function migrateLegacy() {
   await transactionDone(tx);
   // Only delete after the transaction committed. A read-back makes the migration
   // retry-safe if a browser terminates us at an unfortunate time.
-  const verification = await loadAll();
+  const verifyTx = database.transaction("problems", "readonly");
+  const verification = await requestResult(verifyTx.objectStore("problems").getAll());
+  await transactionDone(verifyTx);
   if (verification.length < new Set(oldProblems.value.map((item) => item.id)).size) throw new Error("旧問題データの移行確認に失敗しました。");
   keys.forEach((key) => localStorage.removeItem(key));
 }
 
 export async function initialize() {
-  if (database) return database;
-  if (opened) return opened;
-  if (!globalThis.indexedDB) throw new Error("このブラウザではIndexedDBを利用できません。");
-  opened = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("problems")) db.createObjectStore("problems", { keyPath: "id" });
-      if (!db.objectStoreNames.contains("syncMutations")) db.createObjectStore("syncMutations", { keyPath: "key" });
-      if (!db.objectStoreNames.contains("metadata")) db.createObjectStore("metadata", { keyPath: "key" });
-      if (!db.objectStoreNames.contains("migrationConflicts")) db.createObjectStore("migrationConflicts", { keyPath: "key" });
-    };
-    request.onblocked = () => reject(new Error("IndexedDBの更新が別のタブでブロックされています。不要なタブを閉じて再読み込みしてください。"));
-    request.onerror = (event) => reject(idbError(event, "IndexedDBを開けませんでした。"));
-    request.onsuccess = () => { database = request.result; database.onversionchange = () => database.close(); resolve(database); };
-  });
-  await opened;
-  await migrateLegacy();
-  return database;
+  if (initialized) return initialized;
+  initialized = (async () => {
+    if (!globalThis.indexedDB) throw new Error("このブラウザではIndexedDBを利用できません。");
+    if (!opened) opened = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains("problems")) db.createObjectStore("problems", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("syncMutations")) db.createObjectStore("syncMutations", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("metadata")) db.createObjectStore("metadata", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("migrationConflicts")) db.createObjectStore("migrationConflicts", { keyPath: "key" });
+      };
+      request.onblocked = () => reject(new Error("IndexedDBの更新が別のタブでブロックされています。不要なタブを閉じて再読み込みしてください。"));
+      request.onerror = (event) => reject(idbError(event, "IndexedDBを開けませんでした。"));
+      request.onsuccess = () => { database = request.result; database.onversionchange = () => database.close(); resolve(database); };
+    });
+    await opened;
+    await migrateLegacy();
+    return database;
+  })();
+  return initialized;
 }
 export async function loadAll() {
   await initialize();
