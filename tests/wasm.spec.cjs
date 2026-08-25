@@ -1554,6 +1554,10 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   await page.evaluate(() => showView("manage"));
   await expect(page.locator(".suspended-label")).toContainText("休止");
   await page.locator(".resume-problem").click();
+  await expect.poll(() => page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
+    return state?.suspended;
+  })).toBe(false);
   const resumed = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
