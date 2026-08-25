@@ -100,3 +100,23 @@ test("古い履歴は当時の回答列から間隔を復元する", () => {
   assert.equal(result.currentMature, 1);
   assert.equal(result.netChange, 1);
 });
+
+test("問題一覧から欠けたIDも保存済み履歴があれば成績へ残す", () => {
+  const now = Date.UTC(2026, 7, 25, 12);
+  const answeredAt = now - 10 * DAY;
+  const result = buildNetMatureStats({
+    problems: [],
+    history: {
+      "missing-problem": {
+        attempts: [{ at: answeredAt, correct: true, intervalDays: 28 }],
+        dueAt: answeredAt + 28 * DAY,
+      },
+    },
+    settings: { mature_interval_days: 28 },
+    periodDays: 31,
+    now,
+  });
+  assert.equal(result.currentMature, 1);
+  assert.equal(result.netChange, 1);
+  assert.equal(result.firstProblemDate, "2026-08-15");
+});

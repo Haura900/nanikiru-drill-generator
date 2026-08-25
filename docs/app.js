@@ -1351,8 +1351,7 @@ function buildReviewIntervalBuckets(history) {
 }
 
 function activeHistoryEntries(history) {
-  const problemIds = new Set(problems.map((problem) => problem.id));
-  return Object.entries(history || {}).filter(([problemId]) => problemIds.has(problemId));
+  return Object.entries(history || {}).filter(([, state]) => state && typeof state === "object" && Array.isArray(state.attempts));
 }
 
 function calendarDaysDiffJst(fromMs, toMs, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
@@ -3435,17 +3434,39 @@ async function restoreDump(event) {
   }
 }
 
-function copyBase64() {
+async function copyBase64() {
   const base64Output = $("base64-output");
-  if (base64Output && base64Output.value) {
-    base64Output.select();
-    document.execCommand("copy");
-    const btn = $("copy-base64");
-    const originalText = btn.textContent;
+  const btn = $("copy-base64");
+  const exportMsg = $("export-message");
+  if (!base64Output || !btn) return;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "生成中…";
+  try {
+    const value = base64Output.value || await encodeCurrentSave();
+    base64Output.value = value;
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(value); copied = true; }
+      catch (error) { console.warn("Clipboard API failed; trying selection fallback", error); }
+    }
+    if (!copied) {
+      base64Output.focus();
+      base64Output.select();
+      copied = document.execCommand("copy") === true;
+    }
+    if (!copied) throw new Error("クリップボードへコピーできませんでした。テキスト欄を選択して手動でコピーしてください。");
     btn.textContent = "コピーしました";
+    if (exportMsg) { exportMsg.className = "message ok"; exportMsg.textContent = "セーブデータをコピーしました。"; }
     setTimeout(() => {
       btn.textContent = originalText;
+      btn.disabled = false;
     }, 2000);
+  } catch (error) {
+    console.error("Failed to copy save data", error);
+    btn.textContent = originalText;
+    btn.disabled = false;
+    if (exportMsg) { exportMsg.className = "message error"; exportMsg.textContent = error.message; }
   }
 }
 

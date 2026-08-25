@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import {
   CLOUD_CHUNK_SIZE, decideStartupSync, splitEncodedSave, joinAndValidateChunks, shouldCacheActiveData,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState, mergeStateMaps, decomposeLegacySave,
-  decodeSettingsRecord, mergeSettingsPayload,
+  decodeSettingsRecord, mergeSettingsPayload, findLocalIdsMissingFromCatalog,
 } from "../docs/cloud-sync-core.js";
 
 const hash = async (value) => createHash("sha256").update(value).digest("hex");
@@ -20,6 +20,16 @@ test("起動時同期判断の全分岐", () => {
   assert.equal(decide({ isInitialBinding: true }), "choose");
   assert.equal(decide({ localRevision: 5, cloudRevision: 4 }), "conflict");
   assert.equal(decide({ hasCloud: false, hasLocal: false }), "synced");
+});
+
+test("dirty記録を失ってもcatalogにないローカル問題と履歴を再同期対象にする", () => {
+  assert.deepEqual(findLocalIdsMissingFromCatalog({
+    p: [{ id: "cloud" }, { id: "local-only" }],
+    h: { cloud: {}, "progress-only": {} },
+  }, ["cloud"]), {
+    problemIds: ["local-only"],
+    progressIds: ["progress-only"],
+  });
 });
 
 test("600,000文字境界と複数チャンク", () => {

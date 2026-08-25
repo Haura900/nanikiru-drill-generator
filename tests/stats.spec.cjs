@@ -54,3 +54,39 @@ test("Mature判定日数は設定から保存できる", async ({ page }) => {
   expect(stored.mature_interval_days).toBe(35);
   await expect(page.locator("#review-mature-interval-days")).toHaveValue("35");
 });
+
+test("問題一覧から欠けた履歴もNet Matureと成績に残る", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  await page.evaluate(() => {
+    const answeredAt = Date.now() - 10 * DAY;
+    problems = [];
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
+      orphan: {
+        attempts: [{ at: answeredAt, correct: true, genre: "復旧対象", intervalDays: 28 }],
+        dueAt: answeredAt + 28 * DAY,
+      },
+    }));
+    showView("stats");
+  });
+  await expect(page.locator("#net-mature-current")).toHaveText("1");
+});
+
+test("セーブデータを生成してClipboard APIへコピーできる", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__copiedSave = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (value) => { window.__copiedSave = value; } },
+    });
+  });
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  await page.click('#nav button[data-view="export"]');
+  await page.locator(".save-copy-details summary").click();
+  await page.locator("#copy-base64").click();
+  await expect(page.locator("#export-message")).toContainText("コピーしました");
+  const copied = await page.evaluate(() => window.__copiedSave);
+  expect(copied.startsWith("NK3:")).toBe(true);
+  expect(copied.length).toBeGreaterThan(10);
+});

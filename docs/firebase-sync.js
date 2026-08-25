@@ -10,6 +10,7 @@ import {
   CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS, MAX_SETTINGS_PAYLOAD_CHARS,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
+  findLocalIdsMissingFromCatalog,
 } from "./cloud-sync-core.js?v=20260805-2";
 import * as problemStore from "./problem-store.js?v=20260825-1";
 
@@ -474,9 +475,12 @@ async function handleSignedIn(user) {
   await migrateLegacy(user.uid);
   const catalog = await getDoc(catalogRef(user.uid));
   const api = await waitForSaveApi();
-  if (!catalog.exists() && api.hasMeaningfulLocalData()) {
+  if (api.hasMeaningfulLocalData()) {
     const save = api.buildSaveData();
-    markAllDirty({ problemIds: save.p.map((problem) => problem.id), progressIds: Object.keys(save.h || {}) });
+    const missing = findLocalIdsMissingFromCatalog(save, catalog.exists() ? catalog.data().problemIds || [] : []);
+    if (!catalog.exists() || missing.problemIds.length || missing.progressIds.length) {
+      markAllDirty({ problemIds: missing.problemIds, progressIds: missing.progressIds });
+    }
   }
   subscribeRealtime(user.uid);
   if (hasDirty()) await syncNow(); else emit({ dirty: false, status: "同期済み", lastSync: new Date() });

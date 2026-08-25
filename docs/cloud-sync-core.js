@@ -133,3 +133,14 @@ export async function joinAndValidateChunks(chunks, manifest, hashFunction) {
 export function shouldCacheActiveData(values) {
   return Object.values(values || {}).some((value) => typeof value === "string" && value.length > 0 && value !== "{}" && value !== "[]");
 }
+
+export function findLocalIdsMissingFromCatalog(save, catalogIds = []) {
+  const cloudIds = new Set(Array.isArray(catalogIds) ? catalogIds : []);
+  return {
+    problemIds: (Array.isArray(save?.p) ? save.p : [])
+      .map((problem) => problem?.id)
+      .filter((id) => typeof id === "string" && id && !cloudIds.has(id)),
+    progressIds: Object.keys(save?.h && typeof save.h === "object" ? save.h : {})
+      .filter((id) => !cloudIds.has(id)),
+  };
+}

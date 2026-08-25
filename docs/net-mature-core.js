@@ -134,7 +134,16 @@
     };
     const addEvent = (key, delta) => events.set(key, (events.get(key) || 0) + delta);
 
-    const currentProblems = Array.isArray(problems) ? problems : [];
+    // 学習履歴は成績の正本である。問題が端末間同期の不整合や削除によって
+    // 一覧から一時的に欠けても、残っている回答履歴を集計から捨てない。
+    const suppliedProblems = Array.isArray(problems) ? problems : [];
+    const problemById = new Map(suppliedProblems
+      .filter((problem) => problem?.id)
+      .map((problem) => [problem.id, problem]));
+    Object.keys(history || {}).forEach((id) => {
+      if (!problemById.has(id)) problemById.set(id, { id });
+    });
+    const currentProblems = [...problemById.values()];
     currentProblems.forEach((problem) => {
       const state = history?.[problem?.id] || {};
       const attempts = Array.isArray(state.attempts)
