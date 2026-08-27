@@ -3785,7 +3785,6 @@ function exposeSaveDataApi() {
 
 async function applyCloudRecords({ problemRecords = [], progressRecords = [], settingsRecord = null } = {}) {
   return withCloudUploadSuppressed(async () => {
-    const history = loadHistory();
     problemRecords.forEach((record) => {
       const index = problems.findIndex((problem) => problem.id === record.problemId);
       if (record.deleted) {
@@ -3797,15 +3796,21 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
         else problems.push(value);
       }
     });
-    progressRecords.forEach((record) => {
-      if (record.deleted) delete history[record.problemId];
-      else history[record.problemId] = record.value;
-    });
     const changed = new Set(problemRecords.filter((record) => !record.deleted).map((record) => record.problemId));
     await window.NanikiruProblemStore.upsertMany(problems.map((problem, order) => ({ problem, order })).filter(({ problem }) => changed.has(problem.id)));
     await window.NanikiruProblemStore.removeMany(problemRecords.filter((record) => record.deleted).map((record) => record.problemId));
     await window.NanikiruProblemStore.flush();
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    // Problem and settings snapshots must never write back a stale copy of the
+    // full learning history. Read the latest history only after asynchronous
+    // problem persistence, and touch it only when progress records exist.
+    if (progressRecords.length) {
+      const history = loadHistory();
+      progressRecords.forEach((record) => {
+        if (record.deleted) delete history[record.problemId];
+        else history[record.problemId] = record.value;
+      });
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    }
     if (settingsRecord) {
       const safeSettings = sanitizeReviewSettings(settingsRecord.reviewSettings || {});
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");

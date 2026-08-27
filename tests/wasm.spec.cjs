@@ -1317,6 +1317,26 @@ test("answer progress is marked dirty before learning history is persisted", asy
   expect(order.slice(0, 2)).toEqual(["dirty", "persist"]);
 });
 
+test("a cloud problem snapshot cannot overwrite learning progress saved while it is applied", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  const history = await page.evaluate(async () => {
+    const originalUpsert = window.NanikiruProblemStore.upsertMany;
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({ existing: { attempts: [] } }));
+    window.NanikiruProblemStore.upsertMany = async () => {
+      localStorage.setItem("nanikiru-learning-v1", JSON.stringify({ newest: { attempts: [{ at: 1, correct: true }] } }));
+    };
+    try {
+      await window.NanikiruSaveData.applyCloudRecords({ problemRecords: [] });
+      return JSON.parse(localStorage.getItem("nanikiru-learning-v1"));
+    } finally {
+      window.NanikiruProblemStore.upsertMany = originalUpsert;
+    }
+  });
+  expect(history.existing).toBeUndefined();
+  expect(history.newest?.attempts).toEqual([{ at: 1, correct: true }]);
+});
+
 test("save data is compressed and remains backward compatible", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
