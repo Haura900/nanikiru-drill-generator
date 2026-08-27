@@ -124,7 +124,10 @@
         <canvas id="genre-chart" class="report-chart" width="1100" height="420"></canvas>
         <h3>日付別正答率</h3>
         <canvas id="daily-chart" class="report-chart" width="1100" height="380"></canvas>
-        <h3>学習実績（問題を解いた日）</h3>
+        <div class="section-heading chart-heading">
+          <h3>学習実績（問題を解いた日）</h3>
+          <span id="solve-activity-summary" class="chart-note"></span>
+        </div>
         <canvas id="hard-solve-chart" class="report-chart" width="1100" height="380"></canvas>
         <div class="section-heading chart-heading">
           <h3>何日前に何問追加したか</h3>
@@ -467,8 +470,8 @@
 
   <script src="version.js?v=20260825-2"></script>
   <script type="module" src="problem-store.js?v=20260825-1"></script>
-  <script type="module" src="firebase-sync.js?v=20260825-2"></script>
+  <script type="module" src="firebase-sync.js?v=20260828-1"></script>
   <script src="net-mature-core.js?v=20260825-1"></script>
-  <script src="app.js?v=20260825-3"></script>
+  <script src="app.js?v=20260828-1"></script>
 </body>
 </html>

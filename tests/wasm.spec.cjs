@@ -1391,6 +1391,21 @@ test("a first answer appears in learning activity and review interval charts", a
   expect(chartData.intervalTotal).toBe(1);
 });
 
+test("learning activity counts every answer and retains the full date for today's summary", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const now = Date.now();
+    const history = {
+      a: { attempts: [{ at: now, correct: true }, { at: now + 1, correct: false }] },
+      b: { attempts: [{ at: now + 2, correct: true }] },
+    };
+    return buildSolveActivityPoints(history);
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0].value).toBe(3);
+  expect(result[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+});
+
 test("problem additions are grouped by days ago with a daily average", async ({ page }) => {
   const seedNow = Date.now();
   await page.addInitScript(({ seedNow }) => {

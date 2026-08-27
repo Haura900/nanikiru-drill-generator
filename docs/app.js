@@ -1242,7 +1242,12 @@ function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
 }
 
 function drawHardSolveChart(history) {
-  drawBarChart($("hard-solve-chart"), buildSolveActivityPoints(history), "#8a5b3d");
+  const points = buildSolveActivityPoints(history);
+  const total = points.reduce((sum, point) => sum + point.value, 0);
+  const todayKey = jstDayKey(Date.now(), loadReviewSettings().day_boundary_minutes);
+  const today = points.find((point) => point.date === todayKey)?.value || 0;
+  $("solve-activity-summary").textContent = `今日 ${today.toLocaleString("ja-JP")}問／累計 ${total.toLocaleString("ja-JP")}問`;
+  drawBarChart($("hard-solve-chart"), points, "#8a5b3d");
 }
 
 function buildSolveActivityPoints(history) {
@@ -1256,6 +1261,7 @@ function buildSolveActivityPoints(history) {
     });
   });
   const points = Object.entries(daily).sort().map(([date, value]) => ({
+    date,
     label: date.slice(5),
     value: value.total,
   }));
@@ -1437,10 +1443,14 @@ function drawBarChart(canvas, items, barColor) {
     context.fillText("件数", left, height - 14);
     return;
   }
-  const gap = 8;
-  const barWidth = Math.max(8, Math.min(48, (chartWidth - gap * (data.length - 1)) / data.length));
+  // Keep every item inside the canvas. The old fixed 8px minimum bar and 8px
+  // gap clipped recent learning days once the history grew past about 65 days.
+  const slotWidth = chartWidth / data.length;
+  const barWidth = Math.max(1, Math.min(48, slotWidth * 0.72));
+  const gap = data.length > 1 ? Math.max(0, (chartWidth - data.length * barWidth) / (data.length - 1)) : 0;
   const totalWidth = data.length * barWidth + (data.length - 1) * gap;
   const offset = left + Math.max(0, (chartWidth - totalWidth) / 2);
+  const labelStep = Math.max(1, Math.ceil(30 / Math.max(slotWidth, 1)));
   data.forEach((item, index) => {
     const x = offset + index * (barWidth + gap);
     const value = Number(item.value) || 0;
@@ -1448,14 +1458,20 @@ function drawBarChart(canvas, items, barColor) {
     const y = bottom - barHeight;
     context.fillStyle = barColor;
     context.fillRect(x, y, barWidth, barHeight);
-    context.fillStyle = "#355348";
-    context.textAlign = "center";
-    context.fillText(String(value), x + barWidth / 2, y - 6);
-    context.save();
-    context.translate(x + barWidth / 2, bottom + 18);
-    context.rotate(-Math.PI / 4);
-    context.fillText(item.label, 0, 0);
-    context.restore();
+    if (slotWidth >= 18) {
+      context.fillStyle = "#355348";
+      context.textAlign = "center";
+      context.fillText(String(value), x + barWidth / 2, y - 6);
+    }
+    if (index % labelStep === 0 || index === data.length - 1) {
+      context.fillStyle = "#355348";
+      context.textAlign = "center";
+      context.save();
+      context.translate(x + barWidth / 2, bottom + 18);
+      context.rotate(-Math.PI / 4);
+      context.fillText(item.label, 0, 0);
+      context.restore();
+    }
   });
   context.textAlign = "left";
   context.fillStyle = "#66716b";

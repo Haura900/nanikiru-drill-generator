@@ -9,9 +9,10 @@ import { firebaseConfig, appCheckConfig, isFirebaseConfigured } from "./firebase
 import {
   CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS, MAX_SETTINGS_PAYLOAD_CHARS,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
+  shouldApplyRemoteMutation,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
   findLocalIdsMissingFromCatalog,
-} from "./cloud-sync-core.js?v=20260825-1";
+} from "./cloud-sync-core.js?v=20260828-1";
 import * as problemStore from "./problem-store.js?v=20260825-1";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
@@ -23,6 +24,7 @@ const PROBLEM_VERSIONS_KEY = "nanikiru-problem-versions-v2";
 const PROGRESS_VERSIONS_KEY = "nanikiru-progress-versions-v2";
 const SETTINGS_VERSION_KEY = "nanikiru-settings-version-v2";
 const REPLACE_CLOUD_KEY = "nanikiru-replace-cloud-from-backup-v2";
+const MUTATION_WAL_KEY = "nanikiru-pending-mutation-wal-v1";
 const ACTIVE_KEYS = ["nanikiru-problems-v1", "nanikiru-learning-v1", "nanikiru-review-settings-v1", "nanikiru-admin-count-v1", "nanikiru-genre-order-v1"];
 const listeners = new Set();
 const state = { configured: false, ready: false, user: null, status: "クラウドを確認しています", error: "", lastSync: null, dirty: false, syncing: false };
@@ -49,6 +51,29 @@ const mutationKeys = new Map([
 ]);
 const mutationCache = { problem: new Map(), progress: new Map() };
 let mutationWriteError = null;
+function readMutationWal() {
+  try {
+    const value = JSON.parse(localStorage.getItem(MUTATION_WAL_KEY) || "{}");
+    return {
+      problem: value?.problem && typeof value.problem === "object" ? value.problem : {},
+      progress: value?.progress && typeof value.progress === "object" ? value.progress : {},
+    };
+  } catch { return { problem: {}, progress: {} }; }
+}
+function stageMutationWal(kind, id, entry) {
+  const wal = readMutationWal();
+  if (entry?.version) wal[kind][id] = entry;
+  else delete wal[kind][id];
+  if (Object.keys(wal.problem).length || Object.keys(wal.progress).length) localStorage.setItem(MUTATION_WAL_KEY, JSON.stringify(wal));
+  else localStorage.removeItem(MUTATION_WAL_KEY);
+}
+function clearMutationWal(kind, id, mutationId) {
+  const wal = readMutationWal();
+  if (wal[kind][id]?.version?.mutationId !== mutationId) return;
+  delete wal[kind][id];
+  if (Object.keys(wal.problem).length || Object.keys(wal.progress).length) localStorage.setItem(MUTATION_WAL_KEY, JSON.stringify(wal));
+  else localStorage.removeItem(MUTATION_WAL_KEY);
+}
 function readObject(key) {
   const descriptor = mutationKeys.get(key);
   if (descriptor) {
@@ -68,8 +93,11 @@ function writeObject(key, value) {
     const version = field === "version" ? next[id] : (next[id] || old?.version);
     const dirty = field === "dirty" ? Boolean(next[id]) : Boolean(old?.dirty);
     if (!version) { cache.delete(id); problemStore.putMutation(kind, id, null, false).catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); }); return; }
-    const entry = { version, dirty }; cache.set(id, entry);
-    problemStore.putMutation(kind, id, version, dirty).catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); });
+    if (old?.version?.mutationId === version.mutationId && old.dirty === dirty) return;
+    const entry = { version, dirty }; cache.set(id, entry); stageMutationWal(kind, id, entry);
+    problemStore.putMutation(kind, id, version, dirty)
+      .then(() => clearMutationWal(kind, id, version.mutationId))
+      .catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); });
   });
 }
 async function initializeMutationCache() {
@@ -77,6 +105,18 @@ async function initializeMutationCache() {
   for (const kind of ["problem", "progress"]) {
     const rows = await problemStore.loadMutations(kind);
     rows.forEach((row) => mutationCache[kind].set(row.id, { version: row.version, dirty: row.dirty }));
+  }
+  // localStorage is used as a tiny synchronous write-ahead log. It survives a
+  // reload that happens before IndexedDB finishes committing the dirty marker.
+  const wal = readMutationWal();
+  for (const kind of ["problem", "progress"]) {
+    for (const [id, entry] of Object.entries(wal[kind])) {
+      const existing = mutationCache[kind].get(id);
+      const timeField = kind === "progress" ? "answeredAt" : "modifiedAt";
+      if (!existing || compareMutationVersion(entry.version, existing.version, timeField) >= 0) mutationCache[kind].set(id, entry);
+      await problemStore.putMutation(kind, id, entry.version, entry.dirty);
+      clearMutationWal(kind, id, entry.version.mutationId);
+    }
   }
 }
 const hasDirty = () => Object.keys(readObject(DIRTY_PROBLEMS_KEY)).length > 0 || Object.keys(readObject(DIRTY_PROGRESS_KEY)).length > 0 || Boolean(localStorage.getItem(DIRTY_SETTINGS_KEY));
@@ -144,7 +184,7 @@ function markAllDirty({ problemIds = [], progressIds = [], replaceCloud = false 
 function scheduleUpload() {
   clearTimeout(uploadTimer);
   emit({ dirty: true, status: state.user ? (navigator.onLine ? "未同期の変更があります" : "オフライン・未同期") : "ローカルに未同期の変更があります" });
-  if (state.user && navigator.onLine) uploadTimer = setTimeout(() => syncNow(), 1800);
+  if (state.user && navigator.onLine) uploadTimer = setTimeout(() => syncNow(), 100);
 }
 
 function catalogRef(uid) { return doc(db, "users", uid, "sync", "catalog"); }
@@ -320,13 +360,13 @@ async function flushRemoteRecords() {
   const dirtyProblems = readObject(DIRTY_PROBLEMS_KEY); const dirtyProgress = readObject(DIRTY_PROGRESS_KEY);
   const acceptedProblems = []; const acceptedProgress = [];
   problemRecords.forEach((record) => {
-    if (compareMutationVersion(record, problemVersions[record.problemId], "modifiedAt") < 0) return;
+    if (!shouldApplyRemoteMutation(record, problemVersions[record.problemId], dirtyProblems[record.problemId], "modifiedAt")) return;
     acceptedProblems.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
     problemVersions[record.problemId] = { modifiedAt: record.modifiedAt, mutationId: record.mutationId };
     if (dirtyProblems[record.problemId] && compareMutationVersion(record, dirtyProblems[record.problemId], "modifiedAt") >= 0) delete dirtyProblems[record.problemId];
   });
   progressRecords.forEach((record) => {
-    if (compareMutationVersion(record, progressVersions[record.problemId], "answeredAt") < 0) return;
+    if (!shouldApplyRemoteMutation(record, progressVersions[record.problemId], dirtyProgress[record.problemId], "answeredAt")) return;
     acceptedProgress.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
     progressVersions[record.problemId] = { answeredAt: record.answeredAt, mutationId: record.mutationId };
     if (dirtyProgress[record.problemId] && compareMutationVersion(record, dirtyProgress[record.problemId], "answeredAt") >= 0) delete dirtyProgress[record.problemId];
@@ -482,8 +522,11 @@ async function handleSignedIn(user) {
       markAllDirty({ problemIds: missing.problemIds, progressIds: missing.progressIds });
     }
   }
+  // Upload pending local answers before attaching realtime listeners. Otherwise
+  // the initial (older) cloud snapshot can race with and overwrite those answers.
+  if (hasDirty()) await syncNow();
   subscribeRealtime(user.uid);
-  if (hasDirty()) await syncNow(); else emit({ dirty: false, status: "同期済み", lastSync: new Date() });
+  if (!hasDirty()) emit({ dirty: false, status: "同期済み", lastSync: new Date() });
 }
 
 function renderState() {
@@ -534,6 +577,9 @@ async function initialize() {
 
 window.addEventListener("online", () => { if (state.user) syncNow().catch(() => {}); });
 window.addEventListener("offline", () => emit({ status: state.user ? "オフライン・未同期" : state.status }));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && state.user && hasDirty()) syncNow().catch(() => {});
+});
 window.NanikiruCloud = {
   signIn, signOut, syncNow, repairCloudProblems, scheduleUpload, deleteCloudData, markProblemDirty, markProgressDirty, markSettingsDirty, markAllDirty,
   getState: () => ({ ...state }), subscribe(listener) { listeners.add(listener); listener({ ...state }); return () => listeners.delete(listener); },
