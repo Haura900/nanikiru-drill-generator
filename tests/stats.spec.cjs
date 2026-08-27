@@ -32,7 +32,7 @@ test("Net Matureグラフは1か月表示と28日判定を初期値にする", a
   });
 
   await expect(page.locator('#net-mature-periods input[value="31"]')).toBeChecked();
-  await expect(page.locator("#net-mature-meta")).toContainText("復習間隔 ≥ 28日・直近1か月・日次");
+  await expect(page.locator("#net-mature-meta")).toContainText("Mature＝現在の次回復習間隔が28日以上（初見正解は7日）・直近1か月・日次");
   await expect(page.locator("#net-mature-current")).toHaveText("1");
   await expect(page.locator("#net-mature-change")).toHaveText("+1");
 
