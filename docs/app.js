@@ -598,8 +598,8 @@ function recordAttempt(problem, correct) {
     state.suspendedAt = now;
   }
   history[problem.id] = state;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "学習履歴を保存");
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   return {
     dueAt,
     suspendedNow,
@@ -661,8 +661,8 @@ function reconcileSuspendedProblems({ notify = false } = {}) {
   });
   const changedIds = [...newlySuspended, ...newlyResumed];
   if (!changedIds.length) return { newlySuspended, newlyResumed };
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   changedIds.forEach((problemId) => markProgressDirty(problemId, "休止判定を保存"));
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   if (notify) setTimeout(() => {
     if (newlySuspended.length) alert(`${newlySuspended.length}問が「正解後の不正解」${threshold}回に達していたため休止になりました。\n問題一覧から休止を解除できます。`);
   }, 0);
@@ -687,8 +687,8 @@ function undoCurrentAnswer() {
 
   if (undo.previousState) history[undo.problemId] = undo.previousState;
   else delete history[undo.problemId];
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(undo.problemId, "解答を取り消し", !undo.previousState);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
 
   const restoredState = undo.previousState;
   activeAnswerUndo = null;
@@ -730,8 +730,8 @@ function repairReviewHistoryDueDates() {
     }
   });
   if (changedIds.size) {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を日付境界に調整"));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   }
   return [...changedIds];
 }
@@ -3045,8 +3045,8 @@ function resumeProblem(problemId) {
   state.suspended = false;
   state.wrongTransitionCount = 0;
   delete state.suspendedAt;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problemId, "問題の休止を解除");
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   const message = $("manage-message");
   if (message) {
     message.className = "message ok";
@@ -3385,8 +3385,8 @@ async function deleteEditedProblem(problem) {
   problems = problems.filter((item) => item.id !== problem.id);
   const history = loadHistory();
   delete history[problem.id];
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "問題と学習履歴を削除", true);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   selectedManagedProblemId = null;
   await saveProblems({ deletedIds: [problem.id] });
   $("problem-preview").classList.add("hidden");

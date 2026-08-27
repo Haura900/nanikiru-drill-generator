@@ -1291,6 +1291,32 @@ test("problem save marks the local edit dirty before IndexedDB yields", async ({
   expect(order).toEqual(["dirty", "persist"]);
 });
 
+test("answer progress is marked dirty before learning history is persisted", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  const order = await page.evaluate(() => {
+    const events = [];
+    const originalDirty = window.NanikiruCloud.markProgressDirty;
+    const originalSetItem = Storage.prototype.setItem;
+    window.NanikiruCloud.markProgressDirty = (...args) => {
+      events.push("dirty");
+      return originalDirty(...args);
+    };
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (key === "nanikiru-learning-v1") events.push("persist");
+      return originalSetItem.call(this, key, value);
+    };
+    try {
+      recordAttempt({ id: "progress-write-order", genre: "test" }, true);
+    } finally {
+      window.NanikiruCloud.markProgressDirty = originalDirty;
+      Storage.prototype.setItem = originalSetItem;
+    }
+    return events;
+  });
+  expect(order.slice(0, 2)).toEqual(["dirty", "persist"]);
+});
+
 test("save data is compressed and remains backward compatible", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
@@ -1520,6 +1546,7 @@ test("quiz display sorts red fives between five and six regardless of mpsz order
   });
 
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#hand button.tile img")).toHaveCount(14);
   const displayedTiles = await page.locator("#hand button.tile img").evaluateAll((images) => images.map((image) => image.alt));
   expect(displayedTiles).toEqual([
     "5m", "0m", "6m", "7m",
