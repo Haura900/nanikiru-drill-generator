@@ -1269,6 +1269,28 @@ test("cloud problem repair converts legacy fields without discarding the record"
   expect(result.changes.length).toBeGreaterThan(0);
 });
 
+test("problem save marks the local edit dirty before IndexedDB yields", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const order = await page.evaluate(async () => {
+    problems = [{
+      id: "save-order", hand: "123456789m12344p", answers: ["1m"], primary_answer: "1m", genre: "保存順",
+      melds: [], settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }];
+    const events = [];
+    const originalDirty = window.NanikiruCloud.markProblemDirty;
+    const originalUpsert = window.NanikiruProblemStore.upsertMany;
+    window.NanikiruCloud.markProblemDirty = (...args) => { events.push("dirty"); return originalDirty(...args); };
+    window.NanikiruProblemStore.upsertMany = async (...args) => { events.push("persist"); return originalUpsert(...args); };
+    try { await saveProblems({ changedIds: ["save-order"] }); }
+    finally {
+      window.NanikiruCloud.markProblemDirty = originalDirty;
+      window.NanikiruProblemStore.upsertMany = originalUpsert;
+    }
+    return events.slice(0, 2);
+  });
+  expect(order).toEqual(["dirty", "persist"]);
+});
+
 test("save data is compressed and remains backward compatible", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {

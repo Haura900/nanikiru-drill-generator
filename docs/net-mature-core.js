@@ -123,6 +123,8 @@
     const events = new Map();
     let startingMature = 0;
     let currentMature = 0;
+    let todayAnsweredProblems = 0;
+    let todayMatureProblems = 0;
     let adjustmentCount = 0;
     let earliestAttempt = Infinity;
 
@@ -132,7 +134,12 @@
       const offset = Math.min(0, Math.round((eventDay - currentDay) / DAY));
       return offset;
     };
-    const addEvent = (key, delta) => events.set(key, (events.get(key) || 0) + delta);
+    const addEvent = (key, delta) => {
+      const event = events.get(key) || { gained: 0, lost: 0 };
+      if (delta > 0) event.gained += delta;
+      if (delta < 0) event.lost += Math.abs(delta);
+      events.set(key, event);
+    };
 
     // 学習履歴は成績の正本である。問題が端末間同期の不整合や削除によって
     // 一覧から一時的に欠けても、残っている回答履歴を集計から捨てない。
@@ -177,6 +184,11 @@
       const exactCurrentMature = attempts.length
         ? currentIntervalDays(state, attempts, settings) >= thresholdDays
         : false;
+      const answeredToday = attempts.some((attempt) => logicalDayUtcMs(attempt.at, settings.day_boundary_minutes) === currentDay);
+      if (answeredToday) {
+        todayAnsweredProblems++;
+        if (exactCurrentMature) todayMatureProblems++;
+      }
       if (exactCurrentMature !== reconstructedMature) {
         addEvent(normalizedPeriodDays ? 0 : dayKey(now, settings.day_boundary_minutes).slice(0, 7), exactCurrentMature ? 1 : -1);
         adjustmentCount++;
@@ -194,9 +206,10 @@
     if (normalizedPeriodDays) {
       for (let offset = minimumOffset; offset <= 0; offset++) {
         const key = new Date(currentDay + offset * DAY).toISOString().slice(0, 10);
-        const net = events.get(offset) || 0;
+        const event = events.get(offset) || { gained: 0, lost: 0 };
+        const net = event.gained - event.lost;
         cumulative += net;
-        points.push({ key, label: key.slice(5), net, cumulative });
+        points.push({ key, label: key.slice(5), gained: event.gained, lost: event.lost, net, cumulative });
       }
     } else {
       const currentMonth = monthIndex(dayKey(now, settings.day_boundary_minutes).slice(0, 7));
@@ -206,14 +219,17 @@
       const startMonth = Math.min(monthIndex(startKey), currentMonth);
       for (let index = startMonth; index <= currentMonth; index++) {
         const key = monthKey(index);
-        const net = events.get(key) || 0;
+        const event = events.get(key) || { gained: 0, lost: 0 };
+        const net = event.gained - event.lost;
         cumulative += net;
-        points.push({ key, label: key, net, cumulative });
+        points.push({ key, label: key, gained: event.gained, lost: event.lost, net, cumulative });
       }
     }
 
     if (points.length && cumulative !== currentMature) {
       const correction = currentMature - cumulative;
+      if (correction > 0) points[points.length - 1].gained += correction;
+      if (correction < 0) points[points.length - 1].lost += Math.abs(correction);
       points[points.length - 1].net += correction;
       points[points.length - 1].cumulative = currentMature;
       adjustmentCount++;
@@ -224,6 +240,8 @@
       periodDays: normalizedPeriodDays,
       bucketUnit: normalizedPeriodDays ? "day" : "month",
       currentMature,
+      todayAnsweredProblems,
+      todayMatureProblems,
       startingMature,
       netChange: currentMature - startingMature,
       adjustmentCount,

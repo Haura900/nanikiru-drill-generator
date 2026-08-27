@@ -98,6 +98,8 @@
             <div><small>現在の Mature Problems</small><strong id="net-mature-current">0</strong></div>
             <div><small>期間内の Net 変化</small><strong id="net-mature-change">0</strong></div>
             <div><small>期間開始時</small><strong id="net-mature-start">0</strong></div>
+            <div><small>本日回答した問題</small><strong id="net-mature-today-answered">0</strong></div>
+            <div><small>うち現在 Mature</small><strong id="net-mature-today-current">0</strong></div>
           </div>
           <div class="net-mature-legend" aria-hidden="true">
             <span><i class="net-positive"></i>Net +</span>
@@ -109,7 +111,7 @@
             <summary>直近12期間の数値</summary>
             <div class="net-mature-table-wrap">
               <table>
-                <thead><tr><th>期間</th><th>Net変化</th><th>累積Mature</th></tr></thead>
+                <thead><tr><th>期間</th><th>新規Mature</th><th>Matureから減少</th><th>Net変化</th><th>累積Mature</th></tr></thead>
                 <tbody id="net-mature-values-body"></tbody>
               </table>
             </div>
@@ -471,7 +473,7 @@
   <script src="version.js?v=20260825-2"></script>
   <script type="module" src="problem-store.js?v=20260825-1"></script>
   <script type="module" src="firebase-sync.js?v=20260828-1"></script>
-  <script src="net-mature-core.js?v=20260825-1"></script>
-  <script src="app.js?v=20260828-1"></script>
+  <script src="net-mature-core.js?v=20260828-1"></script>
+  <script src="app.js?v=20260828-2"></script>
 </body>
 </html>

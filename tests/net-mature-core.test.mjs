@@ -43,6 +43,8 @@ test("日次のmature化と若返りをNet変化と累積値へ反映する", ()
   assert.equal(result.startingMature, 0);
   assert.equal(result.currentMature, 1);
   assert.equal(result.netChange, 1);
+  assert.equal(result.points.reduce((sum, point) => sum + point.gained, 0), 2);
+  assert.equal(result.points.reduce((sum, point) => sum + point.lost, 0), 1);
   assert.equal(result.points.reduce((sum, point) => sum + point.net, 0), 1);
   assert.equal(result.points.at(-1).cumulative, 1);
 });
@@ -86,6 +88,26 @@ test("設定したMature判定日数を現在値と系列へ使う", () => {
   };
   assert.equal(buildNetMatureStats({ ...input, settings: { mature_interval_days: 28 } }).currentMature, 0);
   assert.equal(buildNetMatureStats({ ...input, settings: { mature_interval_days: 14 } }).currentMature, 1);
+});
+
+test("本日回答した問題数とそのうち現在Matureの問題数を返す", () => {
+  const result = buildNetMatureStats({
+    problems: [problem("new"), problem("mature"), problem("old")],
+    history: {
+      new: state([
+        { at: now - 1000, correct: true, intervalDays: 7 },
+        { at: now - 500, correct: true, intervalDays: 7 },
+      ], 7),
+      mature: state([{ at: now - 2000, correct: true, intervalDays: 28 }], 28),
+      old: state([{ at: now - 2 * DAY, correct: true, intervalDays: 28 }], 28),
+    },
+    settings: { mature_interval_days: 28 },
+    periodDays: 31,
+    now,
+  });
+  assert.equal(result.todayAnsweredProblems, 2);
+  assert.equal(result.todayMatureProblems, 1);
+  assert.equal(result.currentMature, 2);
 });
 
 test("古い履歴は当時の回答列から間隔を復元する", () => {

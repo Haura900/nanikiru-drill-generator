@@ -130,7 +130,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   exposeSaveDataApi();
   window.dispatchEvent(new CustomEvent("nanikiru-app-ready"));
   try {
-    await window.NANIKIRU_CLOUD_READY;
+    await Promise.race([
+      window.NANIKIRU_CLOUD_READY,
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
   } catch (error) {
     console.error("Initial cloud reconciliation failed", error);
   }
@@ -1004,16 +1007,20 @@ function drawNetMatureReport(history) {
   const registration = !stats.periodDays && stats.firstProblemDate
     ? `・最初の問題登録 ${stats.firstProblemDate}`
     : "";
-  $("net-mature-meta").textContent = `復習間隔 ≥ ${stats.thresholdDays}日・${periodLabel}${registration}`;
+  $("net-mature-meta").textContent = `Mature＝現在の次回復習間隔が${stats.thresholdDays}日以上（初見正解は${settings.first_correct_days}日）・${periodLabel}${registration}`;
   $("net-mature-current").textContent = stats.currentMature.toLocaleString("ja-JP");
   const change = $("net-mature-change");
   change.textContent = `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toLocaleString("ja-JP")}`;
   change.classList.toggle("positive", stats.netChange > 0);
   change.classList.toggle("negative", stats.netChange < 0);
   $("net-mature-start").textContent = stats.startingMature.toLocaleString("ja-JP");
+  $("net-mature-today-answered").textContent = stats.todayAnsweredProblems.toLocaleString("ja-JP");
+  $("net-mature-today-current").textContent = stats.todayMatureProblems.toLocaleString("ja-JP");
   $("net-mature-values-body").innerHTML = stats.points.slice(-12).reverse().map((point) => `
     <tr>
       <td>${escapeHtml(point.key)}</td>
+      <td class="positive">+${point.gained.toLocaleString("ja-JP")}</td>
+      <td class="negative">−${point.lost.toLocaleString("ja-JP")}</td>
       <td class="${point.net > 0 ? "positive" : point.net < 0 ? "negative" : ""}">${point.net > 0 ? "+" : ""}${point.net.toLocaleString("ja-JP")}</td>
       <td>${point.cumulative.toLocaleString("ja-JP")}</td>
     </tr>`).join("");
@@ -1520,6 +1527,10 @@ async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
   const changedProblems = problems
     .map((problem, order) => ({ problem, order }))
     .filter(({ problem }) => changed.has(problem.id));
+  // Protect the new in-memory value before the first asynchronous write. A
+  // realtime cloud snapshot may arrive while IndexedDB is being committed.
+  changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
+  deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
   try {
     await window.NanikiruProblemStore.upsertMany(changedProblems);
     await window.NanikiruProblemStore.removeMany(deletedIds);
@@ -1528,8 +1539,6 @@ async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
     console.error("Failed to save problems to IndexedDB:", error);
     throw new Error(`問題を保存できませんでした。${error.message}`);
   }
-  changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
-  deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
 }
 
 function restoreLocalStorageSnapshot(snapshot) {
