@@ -964,13 +964,61 @@ test("similar-problem generation uses the browser simulator path", async ({ page
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
   expect(result.calls.filter((call) => call.profile === "fast")).toHaveLength(5);
   expect(result.calls.filter((call) => call.profile === "medium")).toHaveLength(0);
-  expect(result.calls.filter((call) => call.profile === "exact")).toHaveLength(3);
+  expect(result.calls.filter((call) => call.profile === "exact")).toHaveLength(5);
   expect(result.calls[0]).toEqual({ profile: "exact", includeYakuStats: true });
-  expect(result.calls.slice(1).every((call) => call.includeYakuStats === false)).toBe(true);
+  expect(result.calls.filter((call) => call.includeYakuStats)).toHaveLength(3);
+  expect(result.calls.filter((call) => !call.includeYakuStats)).toHaveLength(7);
   expect(result.registered.find((problem) => !problem.source_id).simulator.details_complete).toBe(true);
+  expect(result.registered.filter((problem) => problem.source_id).every((problem) =>
+    problem.simulator.details_complete
+    && problem.simulator.rows.every((row) => row.yaku_contributions.length > 0))).toBe(true);
   expect(result.sourceShapleyBars).toBeGreaterThan(0);
   expect(result.sourceMissingYaku).toBe(false);
   expect(result.message).toContain("2問を登録");
+  expect(result.message).toContain("役別Shapleyも計算済み");
+});
+
+test("data tab calculates every missing Shapley result with visible progress", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  await page.evaluate(() => {
+    problems = [
+      {
+        id: "missing-one", hand: "123m123p123s11122z", answers: ["1m"], genre: "補完",
+        settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+      },
+      {
+        id: "missing-two", hand: "234m234p234s11122z", answers: ["2m"], genre: "補完",
+        settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+        simulator: { details_complete: false, rows: [{ tile: "2m" }] },
+      },
+    ];
+    window.__shapleyResolvers = [];
+    window.__shapleySaved = [];
+    window.analyzeWithWasm = () => new Promise((resolve) => window.__shapleyResolvers.push(resolve));
+    window.saveProblems = async ({ changedIds }) => { window.__shapleySaved.push(...changedIds); };
+    showView("export");
+  });
+
+  await expect(page.locator("#shapley-backfill-count")).toHaveText("対象 2問 / 全2問");
+  await page.locator("#calculate-missing-shapley").click();
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 1問目を処理中");
+
+  const resolveNext = () => page.evaluate(() => {
+    const resolve = window.__shapleyResolvers.shift();
+    resolve({
+      details_complete: true,
+      settings_signature: simulatorSettingsSignature(),
+      rows: [{ tile: "1m", yaku_contributions: [{ yaku: 2, shapley: 1000 }] }],
+    });
+  });
+  await resolveNext();
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 2問目を処理中");
+  await resolveNext();
+
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 2問完了・0問失敗");
+  await expect(page.locator("#shapley-backfill-count")).toHaveText("対象 0問 / 全2問");
+  expect(await page.evaluate(() => window.__shapleySaved)).toEqual(["missing-one", "missing-two"]);
 });
 
 test("stopping similar generation registers the source and completed candidates", async ({ page }) => {
@@ -1019,7 +1067,8 @@ test("stopping similar generation registers the source and completed candidates"
       stopHidden: document.querySelector("#stop-generate-button").classList.contains("hidden"),
     };
   });
-  expect(result.candidateExactCalls).toBe(2);
+  // 2回目で探索停止を要求した後、採用済み1問のShapleyを登録前に本計算する。
+  expect(result.candidateExactCalls).toBe(3);
   expect(result.registered).toHaveLength(2);
   expect(result.registered.filter((problem) => !problem.source_id)).toHaveLength(1);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(1);

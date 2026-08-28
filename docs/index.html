@@ -363,7 +363,7 @@
             <label><input id="simulator-enable-calls" type="checkbox"> 副露（1回先・シャンテンが進む鳴き）</label>
             <label><input id="simulator-auto-disable-deep-search" type="checkbox"> 4シャンテン以上でシャンテン戻し・手替わりを自動OFF</label>
             <label><input id="simulator-enable-other-win-stop" type="checkbox"> 他家の和了で計算を打ち切る</label>
-            <label><input id="simulator-fast-similar-generation" type="checkbox"> 類題生成を高速化（オンライン多段探索・役別詳細は表示時に補完）</label>
+            <label><input id="simulator-fast-similar-generation" type="checkbox"> 類題生成を高速化（探索中は役別詳細を省略・採用後に登録前補完）</label>
           </div>
           <label class="simulator-rate-setting">和了のうちツモの割合（%）
             <input id="simulator-tsumo-win-share-percent" type="number" min="0" max="100" step="1">
@@ -380,6 +380,16 @@
             <small>18巡目は17巡目と同じ値を使用します。</small>
           </details>
           <small>これらの設定はセーブデータに含まれ、Googleログイン時はクラウド同期されます。</small>
+        </div>
+
+        <div class="review-settings shapley-maintenance">
+          <h3>Shapleyデータ整備</h3>
+          <p class="description">Shapley未計算、計算途中、または現在のシミュレーター設定と異なる問題をまとめて再計算します。</p>
+          <p id="shapley-backfill-count">確認中…</p>
+          <div class="button-row">
+            <button id="calculate-missing-shapley" type="button">未計算のShapleyをすべて計算</button>
+          </div>
+          <div id="shapley-backfill-status" class="message" aria-live="polite"></div>
         </div>
         
         <div class="data-output-section">

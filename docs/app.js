@@ -61,6 +61,7 @@ let activeSimilarGeneration = null;
 const wasmRequests = new Map();
 const wasmResultMemo = new Map();
 const simulatorDetailRefreshes = new Map();
+let activeShapleyBackfill = null;
 const WASM_RESULT_MEMO_LIMIT = 24;
 const WASM_ASSET_VERSION = "engine-v0.9.14";
 const WASM_RECYCLE_AFTER = 24;
@@ -167,6 +168,7 @@ function showView(name) {
     }
   }
   if (name === "manage") renderAdminProblems();
+  if (name === "export") renderShapleyBackfillState();
 }
 
 function bindQuiz() {
@@ -837,6 +839,7 @@ function saveReviewSettings(settings) {
   if (currentView === "manage") renderAdminProblems();
   if (currentView === "quiz") renderGenreQuizTable();
   if (currentView === "stats") renderStats();
+  if (currentView === "export") renderShapleyBackfillState();
 }
 
 function renderReviewSettings() {
@@ -1675,11 +1678,13 @@ function bindExport() {
   const resetAllBtn = $("reset-all-data");
   const promptDumpBtn = $("backup-prompt-download");
   const promptLaterBtn = $("backup-prompt-later");
+  const shapleyBackfillBtn = $("calculate-missing-shapley");
   
   if (dumpBtn) dumpBtn.addEventListener("click", dumpProblems);
   if (restoreInput) restoreInput.addEventListener("change", restoreDump);
   if (copyBtn) copyBtn.addEventListener("click", copyBase64);
   if (resetAllBtn) resetAllBtn.addEventListener("click", resetAllData);
+  if (shapleyBackfillBtn) shapleyBackfillBtn.addEventListener("click", calculateMissingShapleyStats);
   [
     "review-first-correct-days",
     "review-wrong-retry-days",
@@ -1951,6 +1956,78 @@ function simulatorStatsNeedRefresh(simulation, settings = loadReviewSettings()) 
   if (simulation.details_complete === false) return true;
   if (simulation.settings_signature !== simulatorSettingsSignature(settings)) return true;
   return simulation.rows.some((row) => !Array.isArray(row.yaku_contributions));
+}
+
+function shapleyBackfillTargets() {
+  const settings = loadReviewSettings();
+  return problems.filter((problem) => simulatorStatsNeedRefresh(problem.simulator, settings));
+}
+
+function renderShapleyBackfillState() {
+  const count = $("shapley-backfill-count");
+  const button = $("calculate-missing-shapley");
+  if (!count || !button) return;
+  const missing = shapleyBackfillTargets().length;
+  count.textContent = `対象 ${missing.toLocaleString("ja-JP")}問 / 全${problems.length.toLocaleString("ja-JP")}問`;
+  if (activeShapleyBackfill) return;
+  button.disabled = missing === 0;
+  button.textContent = "未計算のShapleyをすべて計算";
+}
+
+async function calculateMissingShapleyStats() {
+  const button = $("calculate-missing-shapley");
+  const status = $("shapley-backfill-status");
+  if (activeShapleyBackfill) {
+    activeShapleyBackfill.stopRequested = true;
+    button.disabled = true;
+    button.textContent = "停止中…";
+    resetWasmWorker(new Error("Shapley一括計算を停止しました。"));
+    return;
+  }
+  const targets = shapleyBackfillTargets();
+  if (!targets.length) {
+    status.className = "message ok";
+    status.textContent = "Shapley計算が必要な問題はありません。";
+    renderShapleyBackfillState();
+    return;
+  }
+  const task = { stopRequested: false };
+  activeShapleyBackfill = task;
+  button.disabled = false;
+  button.textContent = "処理を停止";
+  let completed = 0;
+  let failed = 0;
+  try {
+    for (let index = 0; index < targets.length; index++) {
+      if (task.stopRequested) break;
+      const problem = targets[index];
+      status.className = "message busy";
+      status.textContent = `全${targets.length}問中 ${index + 1}問目を処理中（完了 ${completed}問・失敗 ${failed}問）`;
+      const previousSimulation = problem.simulator;
+      try {
+        problem.simulator = await analyzeWithWasm(
+          problem.hand,
+          problem.melds || [],
+          problemPayload(problem),
+          { includeYakuStats: true },
+        );
+        await saveProblems({ changedIds: [problem.id] });
+        completed++;
+      } catch (error) {
+        problem.simulator = previousSimulation;
+        if (task.stopRequested) break;
+        failed++;
+        console.error(`Shapley backfill failed for ${problem.id}`, error);
+      }
+    }
+    status.className = `message ${failed ? "error" : "ok"}`;
+    status.textContent = task.stopRequested
+      ? `停止しました。全${targets.length}問中 ${completed}問完了・${failed}問失敗。`
+      : `完了しました。全${targets.length}問中 ${completed}問完了・${failed}問失敗。`;
+  } finally {
+    if (activeShapleyBackfill === task) activeShapleyBackfill = null;
+    renderShapleyBackfillState();
+  }
 }
 
 async function refreshQuizSimulatorStats(presentedProblem, answers, selectedTile) {
@@ -2860,7 +2937,30 @@ async function generateWithWasm() {
       }
     }
     shuffleArray(qualified);
-    const accepted = qualified.slice(0, requested);
+    let accepted = qualified.slice(0, requested);
+    if (fastGeneration && accepted.length) {
+      const enriched = [];
+      for (let index = 0; index < accepted.length; index++) {
+        const problem = accepted[index];
+        setAdminMessage(
+          `採用した類題の役別Shapleyを計算しています（${index + 1}/${accepted.length}）`,
+          "busy",
+        );
+        try {
+          problem.simulator = await analyzeWithWasm(
+            problem.hand,
+            problem.melds || [],
+            problemPayload(problem),
+            { includeYakuStats: true },
+          );
+          enriched.push(problem);
+          generation.completedCount = enriched.length;
+        } catch (error) {
+          console.error(`Generated problem Shapley calculation failed for ${problem.id}`, error);
+        }
+      }
+      accepted = enriched;
+    }
     pending.push(...accepted);
     await registerProblems(pending);
     const degrees = degreeCounts(accepted.map((problem) => problem.transform));
@@ -2874,7 +2974,7 @@ async function generateWithWasm() {
       ? `途中で停止し、完成済みの${accepted.length}問を登録しました。`
       : `${accepted.length}問を登録しました。`;
     setAdminMessage(
-      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${stoppedText}元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
+      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${stoppedText}元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、登録した類題の役別Shapleyも計算済みです。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -3838,6 +3938,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
     renderReviewSettings(); renderAdminCount(); refreshGenres();
     if (currentView === "manage") renderAdminProblems();
     if (currentView === "stats") renderStats();
+    if (currentView === "export") renderShapleyBackfillState();
   });
 }
 
