@@ -110,6 +110,39 @@ test("本日回答した問題数とそのうち現在Matureの問題数を返�
   assert.equal(result.currentMature, 2);
 });
 
+test("日付の切り替え時刻をNet Matureの日付と本日回答数へ反映する", () => {
+  const beforeBoundary = Date.parse("2026-08-07T18:59:00Z"); // 08-08 03:59 JST
+  const atBoundary = Date.parse("2026-08-07T19:00:00Z"); // 08-08 04:00 JST
+  const settings = { mature_interval_days: 28, day_boundary_minutes: 4 * 60 };
+  const history = {
+    before: state([{ at: beforeBoundary, correct: true, intervalDays: 28 }], 28),
+    after: state([{ at: atBoundary, correct: true, intervalDays: 28 }], 28),
+  };
+  const problems = [problem("before"), problem("after")];
+
+  const justBefore = buildNetMatureStats({
+    problems: [problem("before")],
+    history: { before: history.before },
+    settings,
+    periodDays: 31,
+    now: beforeBoundary,
+  });
+  assert.equal(justBefore.points.at(-1).key, "2026-08-07");
+  assert.equal(justBefore.todayAnsweredProblems, 1);
+
+  const justAfter = buildNetMatureStats({
+    problems,
+    history,
+    settings,
+    periodDays: 31,
+    now: atBoundary,
+  });
+  assert.equal(justAfter.points.at(-1).key, "2026-08-08");
+  assert.equal(justAfter.todayAnsweredProblems, 1);
+  assert.equal(justAfter.points.find((point) => point.key === "2026-08-07").gained, 1);
+  assert.equal(justAfter.points.find((point) => point.key === "2026-08-08").gained, 1);
+});
+
 test("古い履歴は当時の回答列から間隔を復元する", () => {
   const attemptAt = now - 7 * DAY;
   const result = buildNetMatureStats({

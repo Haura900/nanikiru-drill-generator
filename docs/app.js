@@ -104,6 +104,7 @@ let wasmActiveRequestMode = {
 };
 let lastWasmMode = null;
 let netMaturePeriodDays = 31;
+let netMatureBoundaryTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -991,11 +992,13 @@ function renderStats() {
 
 function drawNetMatureReport(history) {
   const settings = loadReviewSettings();
+  const now = Date.now();
   const stats = NetMatureCore.buildNetMatureStats({
     problems,
     history,
     settings,
     periodDays: netMaturePeriodDays,
+    now,
   });
   const periodLabel = stats.periodDays === 31
     ? "直近1か月・日次"
@@ -1007,7 +1010,8 @@ function drawNetMatureReport(history) {
   const registration = !stats.periodDays && stats.firstProblemDate
     ? `・最初の問題登録 ${stats.firstProblemDate}`
     : "";
-  $("net-mature-meta").textContent = `Mature＝現在の次回復習間隔が${stats.thresholdDays}日以上（初見正解は${settings.first_correct_days}日）・${periodLabel}${registration}`;
+  const boundaryLabel = formatDayBoundaryTime(settings.day_boundary_minutes);
+  $("net-mature-meta").textContent = `Mature＝現在の次回復習間隔が${stats.thresholdDays}日以上（初見正解は${settings.first_correct_days}日）・日付切替 ${boundaryLabel}・${periodLabel}${registration}`;
   $("net-mature-current").textContent = stats.currentMature.toLocaleString("ja-JP");
   const change = $("net-mature-change");
   change.textContent = `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toLocaleString("ja-JP")}`;
@@ -1025,6 +1029,17 @@ function drawNetMatureReport(history) {
       <td>${point.cumulative.toLocaleString("ja-JP")}</td>
     </tr>`).join("");
   drawNetMatureCanvas($("net-mature-chart"), stats.points);
+  scheduleNetMatureBoundaryRefresh(now, settings.day_boundary_minutes);
+}
+
+function scheduleNetMatureBoundaryRefresh(now, boundaryMinutes) {
+  if (netMatureBoundaryTimer !== null) clearTimeout(netMatureBoundaryTimer);
+  const { end } = localDayRange(now, boundaryMinutes);
+  const delay = Math.max(1000, end - now + 100);
+  netMatureBoundaryTimer = setTimeout(() => {
+    netMatureBoundaryTimer = null;
+    if (currentView === "stats") renderStats();
+  }, Math.min(delay, 0x7fffffff));
 }
 
 function drawNetMatureCanvas(canvas, points) {
