@@ -981,7 +981,7 @@ test("similar-problem generation uses the browser simulator path", async ({ page
 test("data tab calculates every missing Shapley result with visible progress", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await expect(page.locator("#nav")).toBeVisible();
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     problems = [
       {
         id: "missing-one", hand: "123m123p123s11122z", answers: ["1m"], genre: "補完",
@@ -993,10 +993,9 @@ test("data tab calculates every missing Shapley result with visible progress", a
         simulator: { details_complete: false, rows: [{ tile: "2m" }] },
       },
     ];
+    await window.NanikiruProblemStore.replaceAll(problems);
     window.__shapleyResolvers = [];
-    window.__shapleySaved = [];
     window.analyzeWithWasm = () => new Promise((resolve) => window.__shapleyResolvers.push(resolve));
-    window.saveProblems = async ({ changedIds }) => { window.__shapleySaved.push(...changedIds); };
     showView("export");
   });
 
@@ -1018,7 +1017,18 @@ test("data tab calculates every missing Shapley result with visible progress", a
 
   await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 2問完了・0問失敗");
   await expect(page.locator("#shapley-backfill-count")).toHaveText("対象 0問 / 全2問");
-  expect(await page.evaluate(() => window.__shapleySaved)).toEqual(["missing-one", "missing-two"]);
+  const persisted = await page.evaluate(async () => {
+    problems = [];
+    await loadProblems();
+    return {
+      targetIds: shapleyBackfillTargets().map((problem) => problem.id),
+      completeIds: problems
+        .filter((problem) => problem.simulator?.details_complete)
+        .map((problem) => problem.id),
+    };
+  });
+  expect(persisted.targetIds).toEqual([]);
+  expect(persisted.completeIds).toEqual(["missing-one", "missing-two"]);
 });
 
 test("stopping similar generation registers the source and completed candidates", async ({ page }) => {

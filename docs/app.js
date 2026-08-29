@@ -1984,8 +1984,8 @@ async function calculateMissingShapleyStats() {
     resetWasmWorker(new Error("Shapley一括計算を停止しました。"));
     return;
   }
-  const targets = shapleyBackfillTargets();
-  if (!targets.length) {
+  const targetIds = shapleyBackfillTargets().map((problem) => problem.id);
+  if (!targetIds.length) {
     status.className = "message ok";
     status.textContent = "Shapley計算が必要な問題はありません。";
     renderShapleyBackfillState();
@@ -1998,11 +1998,20 @@ async function calculateMissingShapleyStats() {
   let completed = 0;
   let failed = 0;
   try {
-    for (let index = 0; index < targets.length; index++) {
+    for (let index = 0; index < targetIds.length; index++) {
       if (task.stopRequested) break;
-      const problem = targets[index];
+      const problemId = targetIds[index];
+      // saveProblems normalizes the complete collection and replaces object
+      // references. Always resolve the current object by ID instead of keeping
+      // the stale references captured when the batch started.
+      const problem = problems.find((item) => item.id === problemId);
       status.className = "message busy";
-      status.textContent = `全${targets.length}問中 ${index + 1}問目を処理中（完了 ${completed}問・失敗 ${failed}問）`;
+      status.textContent = `全${targetIds.length}問中 ${index + 1}問目を処理中（完了 ${completed}問・失敗 ${failed}問）`;
+      if (!problem) {
+        failed++;
+        console.error(`Shapley backfill target disappeared: ${problemId}`);
+        continue;
+      }
       const previousSimulation = problem.simulator;
       try {
         problem.simulator = await analyzeWithWasm(
@@ -2011,19 +2020,24 @@ async function calculateMissingShapleyStats() {
           problemPayload(problem),
           { includeYakuStats: true },
         );
-        await saveProblems({ changedIds: [problem.id] });
+        await saveProblems({ changedIds: [problemId] });
+        const persisted = await window.NanikiruProblemStore.get(problemId);
+        if (simulatorStatsNeedRefresh(persisted?.simulator)) {
+          throw new Error("計算結果を端末へ保存できませんでした。");
+        }
         completed++;
       } catch (error) {
-        problem.simulator = previousSimulation;
+        const currentProblem = problems.find((item) => item.id === problemId);
+        if (currentProblem) currentProblem.simulator = previousSimulation;
         if (task.stopRequested) break;
         failed++;
-        console.error(`Shapley backfill failed for ${problem.id}`, error);
+        console.error(`Shapley backfill failed for ${problemId}`, error);
       }
     }
     status.className = `message ${failed ? "error" : "ok"}`;
     status.textContent = task.stopRequested
-      ? `停止しました。全${targets.length}問中 ${completed}問完了・${failed}問失敗。`
-      : `完了しました。全${targets.length}問中 ${completed}問完了・${failed}問失敗。`;
+      ? `停止しました。全${targetIds.length}問中 ${completed}問完了・${failed}問失敗。`
+      : `完了しました。全${targetIds.length}問中 ${completed}問完了・${failed}問失敗。`;
   } finally {
     if (activeShapleyBackfill === task) activeShapleyBackfill = null;
     renderShapleyBackfillState();
