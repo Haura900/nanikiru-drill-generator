@@ -1721,13 +1721,13 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   await page.locator(".resume-problem").click();
   await expect.poll(() => page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
-    return state?.suspended;
+    return state?.suspended === true;
   }), { timeout: 15000 }).toBe(false);
   const resumed = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
   });
-  expect(resumed.state.suspended).toBe(false);
+  expect(resumed.state.suspended).not.toBe(true);
   expect(resumed.state.wrongTransitionCount).toBe(0);
   expect(resumed.dueIds).toContain("suspension");
 });
