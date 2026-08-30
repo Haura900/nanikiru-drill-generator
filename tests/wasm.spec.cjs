@@ -239,6 +239,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
 
 test("problem editor defaults to graphical tile input", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("create"));
   await expect(page.locator("#admin-count")).toHaveValue("3");
   await expect(page.locator("#admin-genre")).toHaveValue("");
@@ -262,6 +263,7 @@ test("problem editor defaults to graphical tile input", async ({ page }) => {
 
 test("red fives can be entered and keep their identity", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("create"));
 
   const manzuButtons = page.locator("#hand-picker .picker-tile[data-tile$='m']");
@@ -494,6 +496,7 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
 
 test("data settings persist the suspension threshold, daily new limit, day boundary, Mature threshold and quiz transform", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("10");
