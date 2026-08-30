@@ -709,31 +709,14 @@ function repairReviewHistoryDueDates() {
   const reviewSettings = loadReviewSettings();
   const changedIds = new Set();
   activeHistoryEntries(history).forEach(([problemId, state]) => {
-    const attempts = state?.attempts || [];
-    const last = attempts[attempts.length - 1];
-    if (!last) return;
-    let nextDueAt = Number(state.dueAt || 0);
-
-    if (attempts.length >= 2) {
-      const previous = attempts[attempts.length - 2];
-      const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, last.at, reviewSettings.day_boundary_minutes));
-      const currentDelayDays = (nextDueAt - last.at) / DAY;
-      if (last.correct && !previous.correct && elapsedDays > 0
-        && Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) <= 0.01) {
-        const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
-        nextDueAt = reviewDueAt(last.at, fixedDelayDays, reviewSettings.day_boundary_minutes);
-      }
-    }
-
-    const preservedDelayDays = normalizeReviewDelayDays((nextDueAt - last.at) / DAY);
-    nextDueAt = reviewDueAt(last.at, preservedDelayDays, reviewSettings.day_boundary_minutes);
-    if (Number.isFinite(nextDueAt) && nextDueAt !== Number(state.dueAt || 0)) {
-      state.dueAt = nextDueAt;
+    const normalized = NetMatureCore.normalizeReviewState(state, reviewSettings);
+    if (normalized.changed) {
+      history[problemId] = normalized.state;
       changedIds.add(problemId);
     }
   });
   if (changedIds.size) {
-    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を日付境界に調整"));
+    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習間隔と復習予定を整合"));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   }
   return [...changedIds];
@@ -1014,7 +997,7 @@ function drawNetMatureReport(history) {
     ? `・最初の問題登録 ${stats.firstProblemDate}`
     : "";
   const boundaryLabel = formatDayBoundaryTime(settings.day_boundary_minutes);
-  $("net-mature-meta").textContent = `Mature＝現在の次回復習間隔が${stats.thresholdDays}日以上（初見正解は${settings.first_correct_days}日）・日付切替 ${boundaryLabel}・${periodLabel}${registration}`;
+  $("net-mature-meta").textContent = `Mature＝回答時に決まった次回復習間隔が${stats.thresholdDays}日超（初見正解は${settings.first_correct_days}日）・日付切替 ${boundaryLabel}・${periodLabel}${registration}`;
   $("net-mature-current").textContent = stats.currentMature.toLocaleString("ja-JP");
   const change = $("net-mature-change");
   change.textContent = `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toLocaleString("ja-JP")}`;
@@ -1364,10 +1347,9 @@ function buildReviewScheduleBuckets(history) {
 }
 
 function buildReviewIntervalBuckets(history) {
-  const now = Date.now();
-  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
+  const settings = loadReviewSettings();
   const buckets = [
-    { label: "今日", min: 0, max: 0, value: 0 },
+    { label: "0日", min: 0, max: 0, value: 0 },
     { label: "1日", min: 1, max: 1, value: 0 },
     { label: "2-3日", min: 2, max: 3, value: 0 },
     { label: "4-7日", min: 4, max: 7, value: 0 },
@@ -1377,9 +1359,7 @@ function buildReviewIntervalBuckets(history) {
   ];
   activeHistoryEntries(history).forEach(([, state]) => {
     if (!state?.attempts?.length || isProblemSuspended(state)) return;
-    const dueAt = Number(state.dueAt || 0);
-    if (!dueAt) return;
-    const days = Math.max(0, calendarDaysDiffJst(now, dueAt, boundaryMinutes));
+    const days = NetMatureCore.currentReviewIntervalDays(state, settings);
     const bucket = buckets.find((item) => days >= item.min && days <= item.max);
     if (bucket) bucket.value++;
   });

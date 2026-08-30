@@ -803,7 +803,7 @@ test("review due dates use logical days anchored at the configured boundary", as
       },
     }));
     repairReviewHistoryDueDates();
-    const migratedDueAt = JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["legacy-boundary"].dueAt;
+    const migratedState = JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["legacy-boundary"];
     const originalNow = Date.now;
     Date.now = () => nextMorning;
     const dueProblemIds = dueReviewProblems().map((problem) => problem.id);
@@ -812,7 +812,8 @@ test("review due dates use logical days anchored at the configured boundary", as
       wrongDueAt,
       eligibleNextMorning: wrongDueAt <= nextMorning,
       afterWrongDueAt,
-      migratedDueAt,
+      migratedDueAt: migratedState.dueAt,
+      migratedIntervalDays: migratedState.attempts[0].intervalDays,
       dueProblemIds,
       nearIntegerDelay: normalizeReviewDelayDays((0.1 + 0.2) * 10),
       fractionalDelay: normalizeReviewDelayDays(3.01),
@@ -822,6 +823,7 @@ test("review due dates use logical days anchored at the configured boundary", as
   expect(result.eligibleNextMorning).toBe(true);
   expect(result.afterWrongDueAt).toBe(Date.UTC(2026, 7, 14, 19, 0)); // 2026-08-15 04:00 JST
   expect(result.migratedDueAt).toBe(Date.UTC(2026, 7, 8, 19, 0));
+  expect(result.migratedIntervalDays).toBe(1);
   expect(result.dueProblemIds).toContain("legacy-boundary");
   expect(result.nearIntegerDelay).toBe(3);
   expect(result.fractionalDelay).toBe(4);
@@ -1393,7 +1395,7 @@ test("a cloud problem snapshot cannot overwrite learning progress saved while it
     }
   });
   expect(history.existing).toBeUndefined();
-  expect(history.newest?.attempts).toEqual([{ at: 1, correct: true }]);
+  expect(history.newest?.attempts).toEqual([{ at: 1, correct: true, intervalDays: 7 }]);
 });
 
 test("save data is compressed and remains backward compatible", async ({ page }) => {
@@ -1516,6 +1518,21 @@ test("a first answer appears in learning activity and review interval charts", a
   expect(chartData.activity[0].value).toBe(1);
   expect(chartData.scheduleTotal).toBe(1);
   expect(chartData.intervalTotal).toBe(1);
+});
+
+test("review interval chart uses the interval fixed at the last answer, not remaining days", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const buckets = await page.evaluate(() => {
+    const now = Date.now();
+    return buildReviewIntervalBuckets({
+      interval: {
+        attempts: [{ at: now - 20 * DAY, correct: true, intervalDays: 32 }],
+        dueAt: now + DAY,
+      },
+    });
+  });
+  expect(buckets.find((bucket) => bucket.label === "31日以上").value).toBe(1);
+  expect(buckets.find((bucket) => bucket.label === "1日").value).toBe(0);
 });
 
 test("learning activity counts every answer and retains the full date for today's summary", async ({ page }) => {

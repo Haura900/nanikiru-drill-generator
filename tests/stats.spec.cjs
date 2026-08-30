@@ -24,15 +24,15 @@ test("Net Matureグラフは1か月表示と28日判定を初期値にする", a
     }];
     localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
       "net-mature-test": {
-        attempts: [{ at: answeredAt, correct: true, genre: "テスト", intervalDays: 28 }],
-        dueAt: reviewDueAt(answeredAt, 28, 0),
+        attempts: [{ at: answeredAt, correct: true, genre: "テスト", intervalDays: 32 }],
+        dueAt: reviewDueAt(answeredAt, 32, 0),
       },
     }));
     showView("stats");
   });
 
   await expect(page.locator('#net-mature-periods input[value="31"]')).toBeChecked();
-  await expect(page.locator("#net-mature-meta")).toContainText("Mature＝現在の次回復習間隔が28日以上（初見正解は7日）・日付切替 00:00・直近1か月・日次");
+  await expect(page.locator("#net-mature-meta")).toContainText("Mature＝回答時に決まった次回復習間隔が28日超（初見正解は7日）・日付切替 00:00・直近1か月・日次");
   await expect(page.locator("#net-mature-current")).toHaveText("1");
   await expect(page.locator("#net-mature-change")).toHaveText("+1");
 
@@ -73,12 +73,12 @@ test("Net Matureの日付は設定した日付切替時刻で区切る", async (
     }));
     localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
       "before-boundary": {
-        attempts: [{ at: beforeBoundary, correct: true, intervalDays: 28 }],
-        dueAt: beforeBoundary + 28 * 86400000,
+        attempts: [{ at: beforeBoundary, correct: true, intervalDays: 32 }],
+        dueAt: reviewDueAt(beforeBoundary, 32, 4 * 60),
       },
       "at-boundary": {
-        attempts: [{ at: atBoundary, correct: true, intervalDays: 28 }],
-        dueAt: atBoundary + 28 * 86400000,
+        attempts: [{ at: atBoundary, correct: true, intervalDays: 32 }],
+        dueAt: reviewDueAt(atBoundary, 32, 4 * 60),
       },
     }));
     showView("stats");
@@ -99,8 +99,8 @@ test("問題一覧から欠けた履歴もNet Matureと成績に残る", async (
     problems = [];
     localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
       orphan: {
-        attempts: [{ at: answeredAt, correct: true, genre: "復旧対象", intervalDays: 28 }],
-        dueAt: answeredAt + 28 * DAY,
+        attempts: [{ at: answeredAt, correct: true, genre: "復旧対象", intervalDays: 32 }],
+        dueAt: reviewDueAt(answeredAt, 32, 0),
       },
     }));
     showView("stats");
