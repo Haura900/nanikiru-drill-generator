@@ -11,6 +11,7 @@ test.beforeEach(async ({ page }) => {
 
 test("honor tile images follow mpsz white-green-red order", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
 
   const assetNames = await page.evaluate(() => ["5z", "6z", "7z"].map(assetName));
 
