@@ -4658,6 +4658,12 @@ function assetName(tile) {
   if (tile[0] === "0") {
     return ({ m: "aka3", p: "aka1", s: "aka2" })[tile[1]] + "-66-90-s.png";
   }
+  // The honor-tile asset set orders green dragon before white dragon,
+  // while mpsz uses 5z = white and 6z = green.
+  if (tile[1] === "z") {
+    const honorAssets = { "5": "ji6", "6": "ji5" };
+    if (honorAssets[tile[0]]) return `${honorAssets[tile[0]]}-66-90-s.png`;
+  }
   const prefixes = { m: "man", p: "pin", s: "sou", z: "ji" };
   return `${prefixes[tile[1]]}${tile[0]}-66-90-s.png`;
 }

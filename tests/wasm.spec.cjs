@@ -9,6 +9,18 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("honor tile images follow mpsz white-green-red order", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+
+  const assetNames = await page.evaluate(() => ["5z", "6z", "7z"].map(assetName));
+
+  expect(assetNames).toEqual([
+    "ji6-66-90-s.png",
+    "ji5-66-90-s.png",
+    "ji7-66-90-s.png",
+  ]);
+});
+
 test("mahjong wasm runs in a browser", async ({ page }) => {
   const cspViolations = [];
   page.on("console", (message) => {
