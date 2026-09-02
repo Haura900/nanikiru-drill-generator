@@ -900,6 +900,42 @@ test("review mode adds only the remaining daily quota of random new problems", a
   expect(result.secondPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(5);
 });
 
+test("quiz view automatically starts a new problem when no reviews are due", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const problem = {
+      id: "new-only",
+      hand: "123m123p123s11122z",
+      answers: ["1m"],
+      primary_answer: "1m",
+      genre: "daily-new",
+      created_at: new Date().toISOString(),
+      settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    };
+    problems = [problem];
+    localStorage.setItem("nanikiru-learning-v1", "{}");
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 1,
+      quiz_random_transform: false,
+    }));
+    reviewSkippedThisSession = false;
+    showGenreSelection();
+    const reviewButtonDisabled = document.getElementById("review-question").disabled;
+    showView("quiz");
+    return {
+      context: currentQuizContext,
+      problemId: currentProblem?.id,
+      questionHidden: document.getElementById("question-card").classList.contains("hidden"),
+      reviewButtonDisabled,
+    };
+  });
+
+  expect(result.context).toEqual({ mode: "review" });
+  expect(result.problemId).toBe("new-only");
+  expect(result.questionHidden).toBe(false);
+  expect(result.reviewButtonDisabled).toBe(false);
+});
+
 test("quiz accepts the transformed answer tile", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   await page.evaluate(() => {
@@ -1502,6 +1538,10 @@ test("quiz shows total unseen count and random-mode remaining count", async ({ p
     localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
       "count-c": { attempts: [{ at: Date.now() - 1000, correct: true }], dueAt: Date.now() + 86400000 },
     }));
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 0,
+      quiz_random_transform: false,
+    }));
   });
   await page.goto("http://127.0.0.1:18765/");
   await expect(page.locator(".genre-total-row")).toContainText("合計");
@@ -1634,6 +1674,10 @@ test("cancelling a first answer removes the new learning record", async ({ page 
       id: "undo-first", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "初回取消",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
     }]));
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 0,
+      quiz_random_transform: false,
+    }));
   });
 
   await page.goto("http://127.0.0.1:18765/");

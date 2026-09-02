@@ -160,8 +160,8 @@ function showView(name) {
   });
   if (name === "stats") renderStats();
   if (name === "quiz") {
-    const due = dueReviewProblems();
-    if (due.length && !reviewSkippedThisSession) {
+    const reviewCounts = reviewQuestionCounts();
+    if (reviewCounts.total && !reviewSkippedThisSession) {
       showReviewQuestion();
     } else {
       showGenreSelection();
@@ -283,7 +283,7 @@ function renderGenreQuizTable() {
   const due = dueReviewProblems(history);
   const reviewCounts = reviewQuestionCounts(history);
   $("review-due-count").textContent = `復習 ${due.length}問 + 新規 ${reviewCounts.newProblems}問`;
-  $("review-question").disabled = due.length === 0;
+  $("review-question").disabled = reviewCounts.total === 0;
   $("random-question").disabled = totalUnseen === 0;
 }
 
