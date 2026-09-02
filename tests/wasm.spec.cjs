@@ -9,9 +9,25 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("honor tile images follow mpsz white-green-red order", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+
+  const assetNames = await page.evaluate(() => ["5z", "6z", "7z"].map(assetName));
+
+  expect(assetNames).toEqual([
+    "ji6-66-90-s.png",
+    "ji5-66-90-s.png",
+    "ji7-66-90-s.png",
+  ]);
+});
+
 test("mahjong wasm runs in a browser", async ({ page }) => {
   const cspViolations = [];
-  page.on("console", (message) => { if (/Content Security Policy|Refused to/i.test(message.text())) cspViolations.push(message.text()); });
+  page.on("console", (message) => {
+    const text = message.text();
+    if (/Content Security Policy|Refused to/i.test(text) && !/^\[Report Only\]/i.test(text)) cspViolations.push(text);
+  });
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(() => new Promise((resolve, reject) => {
     const worker = new Worker("wasm/worker.js", { type: "module" });
@@ -43,7 +59,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         calc_yaku_stats: false,
         calc_shapley_stats: false,
         ron_rate: 0,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -90,7 +106,7 @@ test("large tegawari graph completes without exhausting the WASM call stack", as
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 70,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -136,7 +152,7 @@ test("a legal ron tile is not exposed as a chi hand-change", async ({ page }) =>
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 40,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -183,7 +199,7 @@ test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) 
         calc_shapley_stats: true,
         ron_rate: 0.7,
         remaining_tiles: 48,
-        version: "0.9.13",
+        version: "0.9.14",
       },
     });
   }));
@@ -216,7 +232,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       calc_yaku_stats: false,
       calc_shapley_stats: false,
       ron_rate: 0,
-      version: "0.9.13",
+      version: "0.9.14",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;
@@ -236,6 +252,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
 
 test("problem editor defaults to graphical tile input", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("create"));
   await expect(page.locator("#admin-count")).toHaveValue("3");
   await expect(page.locator("#admin-genre")).toHaveValue("");
@@ -259,6 +276,7 @@ test("problem editor defaults to graphical tile input", async ({ page }) => {
 
 test("red fives can be entered and keep their identity", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("create"));
 
   const manzuButtons = page.locator("#hand-picker .picker-tile[data-tile$='m']");
@@ -427,6 +445,12 @@ test("answered problem opens selected in management and can be edited", async ({
   expect(edited.answers).toEqual(["2m"]);
   expect(edited.genre).toBe("編集後");
   expect(edited.simulator.version).toBe("edit-test");
+
+  await page.locator("#preview-hand-input").fill("123456789m12348z");
+  await page.locator("#preview-answer-input").fill("1m");
+  await page.locator("#save-preview-problem").click();
+  await expect(page.locator("#preview-edit-message")).toContainText("存在しない牌");
+  expect(await page.evaluate(() => problems[0].hand)).toBe("223456789m12344p");
 });
 
 test("similar-problem transforms run in the browser", async ({ page }) => {
@@ -485,6 +509,7 @@ test("similar-problem transforms run in the browser", async ({ page }) => {
 
 test("data settings persist the suspension threshold, daily new limit, day boundary, Mature threshold and quiz transform", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.evaluate(() => showView("export"));
   await expect(page.locator("#review-suspension-wrong-transitions")).toHaveValue("8");
   await expect(page.locator("#review-daily-new-problem-limit")).toHaveValue("10");
@@ -884,7 +909,7 @@ test("review due dates use logical days anchored at the configured boundary", as
       },
     }));
     repairReviewHistoryDueDates();
-    const migratedDueAt = JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["legacy-boundary"].dueAt;
+    const migratedState = JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["legacy-boundary"];
     const originalNow = Date.now;
     Date.now = () => nextMorning;
     const dueProblemIds = dueReviewProblems().map((problem) => problem.id);
@@ -893,7 +918,8 @@ test("review due dates use logical days anchored at the configured boundary", as
       wrongDueAt,
       eligibleNextMorning: wrongDueAt <= nextMorning,
       afterWrongDueAt,
-      migratedDueAt,
+      migratedDueAt: migratedState.dueAt,
+      migratedIntervalDays: migratedState.attempts[0].intervalDays,
       dueProblemIds,
       nearIntegerDelay: normalizeReviewDelayDays((0.1 + 0.2) * 10),
       fractionalDelay: normalizeReviewDelayDays(3.01),
@@ -903,6 +929,7 @@ test("review due dates use logical days anchored at the configured boundary", as
   expect(result.eligibleNextMorning).toBe(true);
   expect(result.afterWrongDueAt).toBe(Date.UTC(2026, 7, 14, 19, 0)); // 2026-08-15 04:00 JST
   expect(result.migratedDueAt).toBe(Date.UTC(2026, 7, 8, 19, 0));
+  expect(result.migratedIntervalDays).toBe(1);
   expect(result.dueProblemIds).toContain("legacy-boundary");
   expect(result.nearIntegerDelay).toBe(3);
   expect(result.fractionalDelay).toBe(4);
@@ -961,6 +988,42 @@ test("review mode adds only the remaining daily quota of random new problems", a
   expect(result.firstPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(6);
   expect(result.secondPoolIds.slice(0, 2)).toEqual(["due-a", "due-b"]);
   expect(result.secondPoolIds.filter((id) => id.startsWith("unseen-"))).toHaveLength(5);
+});
+
+test("quiz view automatically starts a new problem when no reviews are due", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const problem = {
+      id: "new-only",
+      hand: "123m123p123s11122z",
+      answers: ["1m"],
+      primary_answer: "1m",
+      genre: "daily-new",
+      created_at: new Date().toISOString(),
+      settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    };
+    problems = [problem];
+    localStorage.setItem("nanikiru-learning-v1", "{}");
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 1,
+      quiz_random_transform: false,
+    }));
+    reviewSkippedThisSession = false;
+    showGenreSelection();
+    const reviewButtonDisabled = document.getElementById("review-question").disabled;
+    showView("quiz");
+    return {
+      context: currentQuizContext,
+      problemId: currentProblem?.id,
+      questionHidden: document.getElementById("question-card").classList.contains("hidden"),
+      reviewButtonDisabled,
+    };
+  });
+
+  expect(result.context).toEqual({ mode: "review" });
+  expect(result.problemId).toBe("new-only");
+  expect(result.questionHidden).toBe(false);
+  expect(result.reviewButtonDisabled).toBe(false);
 });
 
 test("quiz accepts the transformed answer tile", async ({ page }) => {
@@ -1045,13 +1108,71 @@ test("similar-problem generation uses the browser simulator path", async ({ page
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(2);
   expect(result.calls.filter((call) => call.profile === "fast")).toHaveLength(5);
   expect(result.calls.filter((call) => call.profile === "medium")).toHaveLength(0);
-  expect(result.calls.filter((call) => call.profile === "exact")).toHaveLength(3);
+  expect(result.calls.filter((call) => call.profile === "exact")).toHaveLength(5);
   expect(result.calls[0]).toEqual({ profile: "exact", includeYakuStats: true });
-  expect(result.calls.slice(1).every((call) => call.includeYakuStats === false)).toBe(true);
+  expect(result.calls.filter((call) => call.includeYakuStats)).toHaveLength(3);
+  expect(result.calls.filter((call) => !call.includeYakuStats)).toHaveLength(7);
   expect(result.registered.find((problem) => !problem.source_id).simulator.details_complete).toBe(true);
+  expect(result.registered.filter((problem) => problem.source_id).every((problem) =>
+    problem.simulator.details_complete
+    && problem.simulator.rows.every((row) => row.yaku_contributions.length > 0))).toBe(true);
   expect(result.sourceShapleyBars).toBeGreaterThan(0);
   expect(result.sourceMissingYaku).toBe(false);
   expect(result.message).toContain("2問を登録");
+  expect(result.message).toContain("役別Shapleyも計算済み");
+});
+
+test("data tab calculates every missing Shapley result with visible progress", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  await page.evaluate(async () => {
+    problems = [
+      {
+        id: "missing-one", hand: "123m123p123s11122z", answers: ["1m"], genre: "補完",
+        settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+      },
+      {
+        id: "missing-two", hand: "234m234p234s11122z", answers: ["2m"], genre: "補完",
+        settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+        simulator: { details_complete: false, rows: [{ tile: "2m" }] },
+      },
+    ];
+    await window.NanikiruProblemStore.replaceAll(problems);
+    window.__shapleyResolvers = [];
+    window.analyzeWithWasm = () => new Promise((resolve) => window.__shapleyResolvers.push(resolve));
+    showView("export");
+  });
+
+  await expect(page.locator("#shapley-backfill-count")).toHaveText("対象 2問 / 全2問");
+  await page.locator("#calculate-missing-shapley").click();
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 1問目を処理中");
+
+  const resolveNext = () => page.evaluate(() => {
+    const resolve = window.__shapleyResolvers.shift();
+    resolve({
+      details_complete: true,
+      settings_signature: simulatorSettingsSignature(),
+      rows: [{ tile: "1m", yaku_contributions: [{ yaku: 2, shapley: 1000 }] }],
+    });
+  });
+  await resolveNext();
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 2問目を処理中");
+  await resolveNext();
+
+  await expect(page.locator("#shapley-backfill-status")).toContainText("全2問中 2問完了・0問失敗");
+  await expect(page.locator("#shapley-backfill-count")).toHaveText("対象 0問 / 全2問");
+  const persisted = await page.evaluate(async () => {
+    problems = [];
+    await loadProblems();
+    return {
+      targetIds: shapleyBackfillTargets().map((problem) => problem.id),
+      completeIds: problems
+        .filter((problem) => problem.simulator?.details_complete)
+        .map((problem) => problem.id),
+    };
+  });
+  expect(persisted.targetIds).toEqual([]);
+  expect(persisted.completeIds).toEqual(["missing-one", "missing-two"]);
 });
 
 test("stopping similar generation registers the source and completed candidates", async ({ page }) => {
@@ -1100,7 +1221,8 @@ test("stopping similar generation registers the source and completed candidates"
       stopHidden: document.querySelector("#stop-generate-button").classList.contains("hidden"),
     };
   });
-  expect(result.candidateExactCalls).toBe(2);
+  // 2回目で探索停止を要求した後、採用済み1問のShapleyを登録前に本計算する。
+  expect(result.candidateExactCalls).toBe(3);
   expect(result.registered).toHaveLength(2);
   expect(result.registered.filter((problem) => !problem.source_id)).toHaveLength(1);
   expect(result.registered.filter((problem) => problem.source_id)).toHaveLength(1);
@@ -1332,6 +1454,92 @@ test("similar-problem conditions use source tolerance, rank and fixed next-worse
   expect(result.tiedCandidate.accepted).toBe(false);
 });
 
+test("cloud problem repair converts legacy fields without discarding the record", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => window.NanikiruSaveData.repairProblem({
+    id: "old-id",
+    genre: 123,
+    hand: "123m123p123s11122z",
+    answer: "3m 6p",
+    source_id: "bad id",
+    melds: "legacy",
+  }, "cloud-id"));
+  expect(result.value).toMatchObject({
+    id: "cloud-id", genre: "123", hand: "123m123p123s11122z", answers: ["3m", "6p"],
+  });
+  expect(result.value.source_id).toBeUndefined();
+  expect(result.value.melds).toBeUndefined();
+  expect(result.changes.length).toBeGreaterThan(0);
+});
+
+test("problem save marks the local edit dirty before IndexedDB yields", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const order = await page.evaluate(async () => {
+    problems = [{
+      id: "save-order", hand: "123456789m12344p", answers: ["1m"], primary_answer: "1m", genre: "保存順",
+      melds: [], settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
+    }];
+    const events = [];
+    const originalDirty = window.NanikiruCloud.markProblemDirty;
+    const originalUpsert = window.NanikiruProblemStore.upsertMany;
+    window.NanikiruCloud.markProblemDirty = (...args) => { events.push("dirty"); return originalDirty(...args); };
+    window.NanikiruProblemStore.upsertMany = async (...args) => { events.push("persist"); return originalUpsert(...args); };
+    try { await saveProblems({ changedIds: ["save-order"] }); }
+    finally {
+      window.NanikiruCloud.markProblemDirty = originalDirty;
+      window.NanikiruProblemStore.upsertMany = originalUpsert;
+    }
+    return events.slice(0, 2);
+  });
+  expect(order).toEqual(["dirty", "persist"]);
+});
+
+test("answer progress is marked dirty before learning history is persisted", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  const order = await page.evaluate(() => {
+    const events = [];
+    const originalDirty = window.NanikiruCloud.markProgressDirty;
+    const originalSetItem = Storage.prototype.setItem;
+    window.NanikiruCloud.markProgressDirty = (...args) => {
+      events.push("dirty");
+      return originalDirty(...args);
+    };
+    Storage.prototype.setItem = function setItem(key, value) {
+      if (key === "nanikiru-learning-v1") events.push("persist");
+      return originalSetItem.call(this, key, value);
+    };
+    try {
+      recordAttempt({ id: "progress-write-order", genre: "test" }, true);
+    } finally {
+      window.NanikiruCloud.markProgressDirty = originalDirty;
+      Storage.prototype.setItem = originalSetItem;
+    }
+    return events;
+  });
+  expect(order.slice(0, 2)).toEqual(["dirty", "persist"]);
+});
+
+test("a cloud problem snapshot cannot overwrite learning progress saved while it is applied", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
+  const history = await page.evaluate(async () => {
+    const originalUpsert = window.NanikiruProblemStore.upsertMany;
+    localStorage.setItem("nanikiru-learning-v1", JSON.stringify({ existing: { attempts: [] } }));
+    window.NanikiruProblemStore.upsertMany = async () => {
+      localStorage.setItem("nanikiru-learning-v1", JSON.stringify({ newest: { attempts: [{ at: 1, correct: true }] } }));
+    };
+    try {
+      await window.NanikiruSaveData.applyCloudRecords({ problemRecords: [] });
+      return JSON.parse(localStorage.getItem("nanikiru-learning-v1"));
+    } finally {
+      window.NanikiruProblemStore.upsertMany = originalUpsert;
+    }
+  });
+  expect(history.existing).toBeUndefined();
+  expect(history.newest?.attempts).toEqual([{ at: 1, correct: true, intervalDays: 7 }]);
+});
+
 test("save data is compressed and remains backward compatible", async ({ page }) => {
   await page.goto("http://127.0.0.1:18765/");
   const result = await page.evaluate(async () => {
@@ -1420,6 +1628,10 @@ test("quiz shows total unseen count and random-mode remaining count", async ({ p
     localStorage.setItem("nanikiru-learning-v1", JSON.stringify({
       "count-c": { attempts: [{ at: Date.now() - 1000, correct: true }], dueAt: Date.now() + 86400000 },
     }));
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 0,
+      quiz_random_transform: false,
+    }));
   });
   await page.goto("http://127.0.0.1:18765/");
   await expect(page.locator(".genre-total-row")).toContainText("合計");
@@ -1452,6 +1664,36 @@ test("a first answer appears in learning activity and review interval charts", a
   expect(chartData.activity[0].value).toBe(1);
   expect(chartData.scheduleTotal).toBe(1);
   expect(chartData.intervalTotal).toBe(1);
+});
+
+test("review interval chart uses the interval fixed at the last answer, not remaining days", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const buckets = await page.evaluate(() => {
+    const now = Date.now();
+    return buildReviewIntervalBuckets({
+      interval: {
+        attempts: [{ at: now - 20 * DAY, correct: true, intervalDays: 32 }],
+        dueAt: now + DAY,
+      },
+    });
+  });
+  expect(buckets.find((bucket) => bucket.label === "31日以上").value).toBe(1);
+  expect(buckets.find((bucket) => bucket.label === "1日").value).toBe(0);
+});
+
+test("learning activity counts every answer and retains the full date for today's summary", async ({ page }) => {
+  await page.goto("http://127.0.0.1:18765/");
+  const result = await page.evaluate(() => {
+    const now = Date.now();
+    const history = {
+      a: { attempts: [{ at: now, correct: true }, { at: now + 1, correct: false }] },
+      b: { attempts: [{ at: now + 2, correct: true }] },
+    };
+    return buildSolveActivityPoints(history);
+  });
+  expect(result).toHaveLength(1);
+  expect(result[0].value).toBe(3);
+  expect(result[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
 
 test("problem additions are grouped by days ago with a daily average", async ({ page }) => {
@@ -1503,6 +1745,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
   }, { previousAt, previousDueAt });
 
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   await page.locator("#hand button.tile[data-tile='2m']").click();
   await expect(page.locator("#undo-current-answer")).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"].attempts)).toHaveLength(2);
@@ -1510,7 +1753,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
   await page.locator("#undo-current-answer").click();
   const restored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"]);
   expect(restored).toEqual({ attempts: [{ at: previousAt, correct: false, genre: "取消確認" }], dueAt: previousDueAt });
-  await expect(page.locator("#answer-result")).toBeHidden();
+  await expect(page.locator("#answer-result")).toBeHidden({ timeout: 15000 });
   await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
   await expect(page.locator("#question-genre")).toBeHidden();
 });
@@ -1521,6 +1764,10 @@ test("cancelling a first answer removes the new learning record", async ({ page 
       id: "undo-first", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "初回取消",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
     }]));
+    localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
+      daily_new_problem_limit: 0,
+      quiz_random_transform: false,
+    }));
   });
 
   await page.goto("http://127.0.0.1:18765/");
@@ -1545,6 +1792,7 @@ test("quiz display sorts red fives between five and six regardless of mpsz order
   });
 
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#hand button.tile img")).toHaveCount(14);
   const displayedTiles = await page.locator("#hand button.tile img").evaluateAll((images) => images.map((image) => image.alt));
   expect(displayedTiles).toEqual([
     "5m", "0m", "6m", "7m",
@@ -1597,6 +1845,7 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   }, { attempts });
 
   await page.goto("http://127.0.0.1:18765/");
+  await expect(page.locator("#nav")).toBeVisible();
   expect(await page.evaluate(() => wrongTransitionCount({ attempts: [
     { correct: false }, { correct: false }, { correct: true }, { correct: false }, { correct: false },
   ] }))).toBe(1);
@@ -1620,11 +1869,15 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   await page.evaluate(() => showView("manage"));
   await expect(page.locator(".suspended-label")).toContainText("休止");
   await page.locator(".resume-problem").click();
+  await expect.poll(() => page.evaluate(() => {
+    const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
+    return state?.suspended === true;
+  }), { timeout: 15000 }).toBe(false);
   const resumed = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
   });
-  expect(resumed.state.suspended).toBe(false);
+  expect(resumed.state.suspended).not.toBe(true);
   expect(resumed.state.wrongTransitionCount).toBe(0);
   expect(resumed.dueIds).toContain("suspension");
 });

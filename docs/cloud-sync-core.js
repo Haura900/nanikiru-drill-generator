@@ -63,6 +63,15 @@ export function chooseProgressState(local, remote) {
   return chooseState(local, remote, "answeredAt");
 }
 
+export function shouldApplyRemoteMutation(remote, localVersion, dirtyVersion, timeField = "modifiedAt") {
+  if (compareMutationVersion(remote, localVersion, timeField) < 0) return false;
+  // A realtime snapshot can arrive while a newer local edit is still waiting to
+  // upload. Applying that older snapshot first would replace the value that the
+  // pending mutation is supposed to upload.
+  if (dirtyVersion && compareMutationVersion(remote, dirtyVersion, timeField) < 0) return false;
+  return true;
+}
+
 export function chooseSettingsState(local, remote) {
   return chooseState(local, remote, "modifiedAt");
 }
@@ -132,4 +141,15 @@ export async function joinAndValidateChunks(chunks, manifest, hashFunction) {
 
 export function shouldCacheActiveData(values) {
   return Object.values(values || {}).some((value) => typeof value === "string" && value.length > 0 && value !== "{}" && value !== "[]");
+}
+
+export function findLocalIdsMissingFromCatalog(save, catalogIds = []) {
+  const cloudIds = new Set(Array.isArray(catalogIds) ? catalogIds : []);
+  return {
+    problemIds: (Array.isArray(save?.p) ? save.p : [])
+      .map((problem) => problem?.id)
+      .filter((id) => typeof id === "string" && id && !cloudIds.has(id)),
+    progressIds: Object.keys(save?.h && typeof save.h === "object" ? save.h : {})
+      .filter((id) => !cloudIds.has(id)),
+  };
 }

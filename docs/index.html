@@ -98,6 +98,8 @@
             <div><small>現在の Mature Problems</small><strong id="net-mature-current">0</strong></div>
             <div><small>期間内の Net 変化</small><strong id="net-mature-change">0</strong></div>
             <div><small>期間開始時</small><strong id="net-mature-start">0</strong></div>
+            <div><small>本日回答した問題</small><strong id="net-mature-today-answered">0</strong></div>
+            <div><small>うち現在 Mature</small><strong id="net-mature-today-current">0</strong></div>
           </div>
           <div class="net-mature-legend" aria-hidden="true">
             <span><i class="net-positive"></i>Net +</span>
@@ -109,7 +111,7 @@
             <summary>直近12期間の数値</summary>
             <div class="net-mature-table-wrap">
               <table>
-                <thead><tr><th>期間</th><th>Net変化</th><th>累積Mature</th></tr></thead>
+                <thead><tr><th>期間</th><th>新規Mature</th><th>Matureから減少</th><th>Net変化</th><th>累積Mature</th></tr></thead>
                 <tbody id="net-mature-values-body"></tbody>
               </table>
             </div>
@@ -124,7 +126,10 @@
         <canvas id="genre-chart" class="report-chart" width="1100" height="420"></canvas>
         <h3>日付別正答率</h3>
         <canvas id="daily-chart" class="report-chart" width="1100" height="380"></canvas>
-        <h3>学習実績（問題を解いた日）</h3>
+        <div class="section-heading chart-heading">
+          <h3>学習実績（問題を解いた日）</h3>
+          <span id="solve-activity-summary" class="chart-note"></span>
+        </div>
         <canvas id="hard-solve-chart" class="report-chart" width="1100" height="380"></canvas>
         <div class="section-heading chart-heading">
           <h3>何日前に何問追加したか</h3>
@@ -133,7 +138,8 @@
         <canvas id="problem-add-chart" class="report-chart" width="1100" height="360"></canvas>
         <h3>何日後に復習問題が何問出るか</h3>
         <canvas id="review-schedule-chart" class="report-chart" width="1100" height="360"></canvas>
-        <h3>今の復習間隔の分布</h3>
+        <h3>回答時に決まった復習間隔の分布</h3>
+        <p class="description">最後に回答してから次に出題されるまでの設定日数です。「何日後に出るか」とは異なり、日が進んでも減りません。</p>
         <canvas id="review-interval-chart" class="report-chart" width="1100" height="360"></canvas>
       </div>
     </section>
@@ -302,6 +308,7 @@
             <p id="cloud-last-sync" class="description"></p>
             <div class="button-row">
               <button id="cloud-sync-now" type="button">今すぐ同期</button>
+              <button id="cloud-repair-problems" type="button">問題データを検査・修復</button>
               <button id="cloud-logout-button" type="button">ログアウト</button>
             </div>
           </div>
@@ -357,7 +364,7 @@
             <label><input id="simulator-enable-calls" type="checkbox"> 副露（1回先・シャンテンが進む鳴き）</label>
             <label><input id="simulator-auto-disable-deep-search" type="checkbox"> 4シャンテン以上でシャンテン戻し・手替わりを自動OFF</label>
             <label><input id="simulator-enable-other-win-stop" type="checkbox"> 他家の和了で計算を打ち切る</label>
-            <label><input id="simulator-fast-similar-generation" type="checkbox"> 類題生成を高速化（オンライン多段探索・役別詳細は表示時に補完）</label>
+            <label><input id="simulator-fast-similar-generation" type="checkbox"> 類題生成を高速化（探索中は役別詳細を省略・採用後に登録前補完）</label>
           </div>
           <label class="simulator-rate-setting">和了のうちツモの割合（%）
             <input id="simulator-tsumo-win-share-percent" type="number" min="0" max="100" step="1">
@@ -390,6 +397,16 @@
             <small>18巡目は17巡目と同じ値を使用します。</small>
           </details>
           <small>これらの設定はセーブデータに含まれ、Googleログイン時はクラウド同期されます。</small>
+        </div>
+
+        <div class="review-settings shapley-maintenance">
+          <h3>Shapleyデータ整備</h3>
+          <p class="description">Shapley未計算、計算途中、または現在のシミュレーター設定と異なる問題をまとめて再計算します。</p>
+          <p id="shapley-backfill-count">確認中…</p>
+          <div class="button-row">
+            <button id="calculate-missing-shapley" type="button">未計算のShapleyをすべて計算</button>
+          </div>
+          <div id="shapley-backfill-status" class="message" aria-live="polite"></div>
         </div>
         
         <div class="data-output-section">
@@ -480,9 +497,10 @@
     </div>
   </div>
 
-  <script src="version.js?v=20260813-7"></script>
-  <script type="module" src="firebase-sync.js?v=20260813-2"></script>
-  <script src="net-mature-core.js?v=20260813-2"></script>
-  <script src="app.js?v=20260813-7"></script>
+  <script src="version.js?v=20260825-2"></script>
+  <script type="module" src="problem-store.js?v=20260825-1"></script>
+  <script type="module" src="firebase-sync.js?v=20260828-1"></script>
+  <script src="net-mature-core.js?v=20260828-1"></script>
+  <script src="app.js?v=20260828-2"></script>
 </body>
 </html>

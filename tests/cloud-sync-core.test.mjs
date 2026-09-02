@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import {
   CLOUD_CHUNK_SIZE, decideStartupSync, splitEncodedSave, joinAndValidateChunks, shouldCacheActiveData,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState, mergeStateMaps, decomposeLegacySave,
-  decodeSettingsRecord, mergeSettingsPayload,
+  decodeSettingsRecord, mergeSettingsPayload, findLocalIdsMissingFromCatalog,
+  shouldApplyRemoteMutation,
 } from "../docs/cloud-sync-core.js";
 
 const hash = async (value) => createHash("sha256").update(value).digest("hex");
@@ -20,6 +21,16 @@ test("起動時同期判断の全分岐", () => {
   assert.equal(decide({ isInitialBinding: true }), "choose");
   assert.equal(decide({ localRevision: 5, cloudRevision: 4 }), "conflict");
   assert.equal(decide({ hasCloud: false, hasLocal: false }), "synced");
+});
+
+test("dirty記録を失ってもcatalogにないローカル問題と履歴を再同期対象にする", () => {
+  assert.deepEqual(findLocalIdsMissingFromCatalog({
+    p: [{ id: "cloud" }, { id: "local-only" }],
+    h: { cloud: {}, "progress-only": {} },
+  }, ["cloud"]), {
+    problemIds: ["local-only"],
+    progressIds: ["progress-only"],
+  });
 });
 
 test("600,000文字境界と複数チャンク", () => {
@@ -49,6 +60,20 @@ test("同時刻ではmutationIdで決定する", () => {
   assert.equal(chooseProblemState({ modifiedAt: 10, mutationId: "a" }, { modifiedAt: 11, mutationId: "a" }).modifiedAt, 11);
   assert.equal(chooseProgressState({ answeredAt: 12, mutationId: "z" }, { answeredAt: 12, mutationId: "a" }).mutationId, "z");
   assert.equal(chooseSettingsState({ modifiedAt: 1, mutationId: "a" }, { modifiedAt: 2, mutationId: "a" }).modifiedAt, 2);
+});
+
+test("未送信のローカル回答より古いリアルタイム更新を適用しない", () => {
+  const localVersion = { answeredAt: 10, mutationId: "local-synced" };
+  const dirtyVersion = { answeredAt: 30, mutationId: "local-pending" };
+  assert.equal(shouldApplyRemoteMutation(
+    { answeredAt: 20, mutationId: "cloud-old" }, localVersion, dirtyVersion, "answeredAt",
+  ), false);
+  assert.equal(shouldApplyRemoteMutation(
+    { answeredAt: 40, mutationId: "cloud-new" }, localVersion, dirtyVersion, "answeredAt",
+  ), true);
+  assert.equal(shouldApplyRemoteMutation(
+    dirtyVersion, localVersion, dirtyVersion, "answeredAt",
+  ), true);
 });
 
 for (const order of ["PC先行", "スマホ先行"]) {

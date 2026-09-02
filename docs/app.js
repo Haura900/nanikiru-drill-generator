@@ -72,8 +72,9 @@ let activeSimilarGeneration = null;
 const wasmRequests = new Map();
 const wasmResultMemo = new Map();
 const simulatorDetailRefreshes = new Map();
+let activeShapleyBackfill = null;
 const WASM_RESULT_MEMO_LIMIT = 24;
-const WASM_ASSET_VERSION = "engine-v0.9.13";
+const WASM_ASSET_VERSION = "engine-v0.9.14";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 const WASM_DEFAULT_FLAGS = Object.freeze({
@@ -115,6 +116,7 @@ let wasmActiveRequestMode = {
 };
 let lastWasmMode = null;
 let netMaturePeriodDays = 31;
+let netMatureBoundaryTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -128,9 +130,26 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderAdminCount();
   renderReviewSettings();
   renderBuildVersion();
-  await loadProblems();
+  try {
+    await loadProblems();
+  } catch (error) {
+    console.error("Problem storage initialization failed", error);
+    const message = document.createElement("p");
+    message.className = "message error";
+    message.textContent = `保存済みの問題を読み込めませんでした。データは削除されていません。${error.message}`;
+    document.querySelector("main")?.prepend(message);
+    return;
+  }
   exposeSaveDataApi();
   window.dispatchEvent(new CustomEvent("nanikiru-app-ready"));
+  try {
+    await Promise.race([
+      window.NANIKIRU_CLOUD_READY,
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
+  } catch (error) {
+    console.error("Initial cloud reconciliation failed", error);
+  }
   document.getElementById("nav").classList.remove("hidden");
   showView("quiz");
   maybeShowBackupPrompt();
@@ -152,14 +171,15 @@ function showView(name) {
   });
   if (name === "stats") renderStats();
   if (name === "quiz") {
-    const due = dueReviewProblems();
-    if (due.length && !reviewSkippedThisSession) {
+    const reviewCounts = reviewQuestionCounts();
+    if (reviewCounts.total && !reviewSkippedThisSession) {
       showReviewQuestion();
     } else {
       showGenreSelection();
     }
   }
   if (name === "manage") renderAdminProblems();
+  if (name === "export") renderShapleyBackfillState();
 }
 
 function bindQuiz() {
@@ -274,7 +294,7 @@ function renderGenreQuizTable() {
   const due = dueReviewProblems(history);
   const reviewCounts = reviewQuestionCounts(history);
   $("review-due-count").textContent = `復習 ${due.length}問 + 新規 ${reviewCounts.newProblems}問`;
-  $("review-question").disabled = due.length === 0;
+  $("review-question").disabled = reviewCounts.total === 0;
   $("random-question").disabled = totalUnseen === 0;
 }
 
@@ -592,8 +612,8 @@ function recordAttempt(problem, correct) {
     state.suspendedAt = now;
   }
   history[problem.id] = state;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "学習履歴を保存");
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   return {
     dueAt,
     suspendedNow,
@@ -655,8 +675,8 @@ function reconcileSuspendedProblems({ notify = false } = {}) {
   });
   const changedIds = [...newlySuspended, ...newlyResumed];
   if (!changedIds.length) return { newlySuspended, newlyResumed };
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   changedIds.forEach((problemId) => markProgressDirty(problemId, "休止判定を保存"));
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   if (notify) setTimeout(() => {
     if (newlySuspended.length) alert(`${newlySuspended.length}問が「正解後の不正解」${threshold}回に達していたため休止になりました。\n問題一覧から休止を解除できます。`);
   }, 0);
@@ -681,8 +701,8 @@ function undoCurrentAnswer() {
 
   if (undo.previousState) history[undo.problemId] = undo.previousState;
   else delete history[undo.problemId];
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(undo.problemId, "解答を取り消し", !undo.previousState);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
 
   const restoredState = undo.previousState;
   activeAnswerUndo = null;
@@ -700,32 +720,15 @@ function repairReviewHistoryDueDates() {
   const reviewSettings = loadReviewSettings();
   const changedIds = new Set();
   activeHistoryEntries(history).forEach(([problemId, state]) => {
-    const attempts = state?.attempts || [];
-    const last = attempts[attempts.length - 1];
-    if (!last) return;
-    let nextDueAt = Number(state.dueAt || 0);
-
-    if (attempts.length >= 2) {
-      const previous = attempts[attempts.length - 2];
-      const elapsedDays = Math.max(0, calendarDaysDiffJst(previous.at, last.at, reviewSettings.day_boundary_minutes));
-      const currentDelayDays = (nextDueAt - last.at) / DAY;
-      if (last.correct && !previous.correct && elapsedDays > 0
-        && Math.abs(currentDelayDays - reviewSettings.wrong_then_correct_days) <= 0.01) {
-        const fixedDelayDays = (elapsedDays + reviewSettings.wrong_then_correct_days) * reviewSettings.repeat_multiplier;
-        nextDueAt = reviewDueAt(last.at, fixedDelayDays, reviewSettings.day_boundary_minutes);
-      }
-    }
-
-    const preservedDelayDays = normalizeReviewDelayDays((nextDueAt - last.at) / DAY);
-    nextDueAt = reviewDueAt(last.at, preservedDelayDays, reviewSettings.day_boundary_minutes);
-    if (Number.isFinite(nextDueAt) && nextDueAt !== Number(state.dueAt || 0)) {
-      state.dueAt = nextDueAt;
+    const normalized = NetMatureCore.normalizeReviewState(state, reviewSettings);
+    if (normalized.changed) {
+      history[problemId] = normalized.state;
       changedIds.add(problemId);
     }
   });
   if (changedIds.size) {
+    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習間隔と復習予定を整合"));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    changedIds.forEach((problemId) => markProgressDirty(problemId, "復習予定を日付境界に調整"));
   }
   return [...changedIds];
 }
@@ -851,6 +854,7 @@ function saveReviewSettings(settings) {
   if (currentView === "manage") renderAdminProblems();
   if (currentView === "quiz") renderGenreQuizTable();
   if (currentView === "stats") renderStats();
+  if (currentView === "export") renderShapleyBackfillState();
 }
 
 function renderReviewSettings() {
@@ -1030,11 +1034,13 @@ function renderStats() {
 
 function drawNetMatureReport(history) {
   const settings = loadReviewSettings();
+  const now = Date.now();
   const stats = NetMatureCore.buildNetMatureStats({
     problems,
     history,
     settings,
     periodDays: netMaturePeriodDays,
+    now,
   });
   const periodLabel = stats.periodDays === 31
     ? "直近1か月・日次"
@@ -1046,20 +1052,36 @@ function drawNetMatureReport(history) {
   const registration = !stats.periodDays && stats.firstProblemDate
     ? `・最初の問題登録 ${stats.firstProblemDate}`
     : "";
-  $("net-mature-meta").textContent = `復習間隔 ≥ ${stats.thresholdDays}日・${periodLabel}${registration}`;
+  const boundaryLabel = formatDayBoundaryTime(settings.day_boundary_minutes);
+  $("net-mature-meta").textContent = `Mature＝回答時に決まった次回復習間隔が${stats.thresholdDays}日超（初見正解は${settings.first_correct_days}日）・日付切替 ${boundaryLabel}・${periodLabel}${registration}`;
   $("net-mature-current").textContent = stats.currentMature.toLocaleString("ja-JP");
   const change = $("net-mature-change");
   change.textContent = `${stats.netChange > 0 ? "+" : ""}${stats.netChange.toLocaleString("ja-JP")}`;
   change.classList.toggle("positive", stats.netChange > 0);
   change.classList.toggle("negative", stats.netChange < 0);
   $("net-mature-start").textContent = stats.startingMature.toLocaleString("ja-JP");
+  $("net-mature-today-answered").textContent = stats.todayAnsweredProblems.toLocaleString("ja-JP");
+  $("net-mature-today-current").textContent = stats.todayMatureProblems.toLocaleString("ja-JP");
   $("net-mature-values-body").innerHTML = stats.points.slice(-12).reverse().map((point) => `
     <tr>
       <td>${escapeHtml(point.key)}</td>
+      <td class="positive">+${point.gained.toLocaleString("ja-JP")}</td>
+      <td class="negative">−${point.lost.toLocaleString("ja-JP")}</td>
       <td class="${point.net > 0 ? "positive" : point.net < 0 ? "negative" : ""}">${point.net > 0 ? "+" : ""}${point.net.toLocaleString("ja-JP")}</td>
       <td>${point.cumulative.toLocaleString("ja-JP")}</td>
     </tr>`).join("");
   drawNetMatureCanvas($("net-mature-chart"), stats.points);
+  scheduleNetMatureBoundaryRefresh(now, settings.day_boundary_minutes);
+}
+
+function scheduleNetMatureBoundaryRefresh(now, boundaryMinutes) {
+  if (netMatureBoundaryTimer !== null) clearTimeout(netMatureBoundaryTimer);
+  const { end } = localDayRange(now, boundaryMinutes);
+  const delay = Math.max(1000, end - now + 100);
+  netMatureBoundaryTimer = setTimeout(() => {
+    netMatureBoundaryTimer = null;
+    if (currentView === "stats") renderStats();
+  }, Math.min(delay, 0x7fffffff));
 }
 
 function drawNetMatureCanvas(canvas, points) {
@@ -1284,7 +1306,12 @@ function drawDailyChart(attempts, firstDailyAttempts, firstProblemAttempts) {
 }
 
 function drawHardSolveChart(history) {
-  drawBarChart($("hard-solve-chart"), buildSolveActivityPoints(history), "#8a5b3d");
+  const points = buildSolveActivityPoints(history);
+  const total = points.reduce((sum, point) => sum + point.value, 0);
+  const todayKey = jstDayKey(Date.now(), loadReviewSettings().day_boundary_minutes);
+  const today = points.find((point) => point.date === todayKey)?.value || 0;
+  $("solve-activity-summary").textContent = `今日 ${today.toLocaleString("ja-JP")}問／累計 ${total.toLocaleString("ja-JP")}問`;
+  drawBarChart($("hard-solve-chart"), points, "#8a5b3d");
 }
 
 function buildSolveActivityPoints(history) {
@@ -1298,6 +1325,7 @@ function buildSolveActivityPoints(history) {
     });
   });
   const points = Object.entries(daily).sort().map(([date, value]) => ({
+    date,
     label: date.slice(5),
     value: value.total,
   }));
@@ -1375,10 +1403,9 @@ function buildReviewScheduleBuckets(history) {
 }
 
 function buildReviewIntervalBuckets(history) {
-  const now = Date.now();
-  const boundaryMinutes = loadReviewSettings().day_boundary_minutes;
+  const settings = loadReviewSettings();
   const buckets = [
-    { label: "今日", min: 0, max: 0, value: 0 },
+    { label: "0日", min: 0, max: 0, value: 0 },
     { label: "1日", min: 1, max: 1, value: 0 },
     { label: "2-3日", min: 2, max: 3, value: 0 },
     { label: "4-7日", min: 4, max: 7, value: 0 },
@@ -1388,9 +1415,7 @@ function buildReviewIntervalBuckets(history) {
   ];
   activeHistoryEntries(history).forEach(([, state]) => {
     if (!state?.attempts?.length || isProblemSuspended(state)) return;
-    const dueAt = Number(state.dueAt || 0);
-    if (!dueAt) return;
-    const days = Math.max(0, calendarDaysDiffJst(now, dueAt, boundaryMinutes));
+    const days = NetMatureCore.currentReviewIntervalDays(state, settings);
     const bucket = buckets.find((item) => days >= item.min && days <= item.max);
     if (bucket) bucket.value++;
   });
@@ -1398,8 +1423,7 @@ function buildReviewIntervalBuckets(history) {
 }
 
 function activeHistoryEntries(history) {
-  const problemIds = new Set(problems.map((problem) => problem.id));
-  return Object.entries(history || {}).filter(([problemId]) => problemIds.has(problemId));
+  return Object.entries(history || {}).filter(([, state]) => state && typeof state === "object" && Array.isArray(state.attempts));
 }
 
 function calendarDaysDiffJst(fromMs, toMs, boundaryMinutes = loadReviewSettings().day_boundary_minutes) {
@@ -1480,10 +1504,14 @@ function drawBarChart(canvas, items, barColor) {
     context.fillText("件数", left, height - 14);
     return;
   }
-  const gap = 8;
-  const barWidth = Math.max(8, Math.min(48, (chartWidth - gap * (data.length - 1)) / data.length));
+  // Keep every item inside the canvas. The old fixed 8px minimum bar and 8px
+  // gap clipped recent learning days once the history grew past about 65 days.
+  const slotWidth = chartWidth / data.length;
+  const barWidth = Math.max(1, Math.min(48, slotWidth * 0.72));
+  const gap = data.length > 1 ? Math.max(0, (chartWidth - data.length * barWidth) / (data.length - 1)) : 0;
   const totalWidth = data.length * barWidth + (data.length - 1) * gap;
   const offset = left + Math.max(0, (chartWidth - totalWidth) / 2);
+  const labelStep = Math.max(1, Math.ceil(30 / Math.max(slotWidth, 1)));
   data.forEach((item, index) => {
     const x = offset + index * (barWidth + gap);
     const value = Number(item.value) || 0;
@@ -1491,14 +1519,20 @@ function drawBarChart(canvas, items, barColor) {
     const y = bottom - barHeight;
     context.fillStyle = barColor;
     context.fillRect(x, y, barWidth, barHeight);
-    context.fillStyle = "#355348";
-    context.textAlign = "center";
-    context.fillText(String(value), x + barWidth / 2, y - 6);
-    context.save();
-    context.translate(x + barWidth / 2, bottom + 18);
-    context.rotate(-Math.PI / 4);
-    context.fillText(item.label, 0, 0);
-    context.restore();
+    if (slotWidth >= 18) {
+      context.fillStyle = "#355348";
+      context.textAlign = "center";
+      context.fillText(String(value), x + barWidth / 2, y - 6);
+    }
+    if (index % labelStep === 0 || index === data.length - 1) {
+      context.fillStyle = "#355348";
+      context.textAlign = "center";
+      context.save();
+      context.translate(x + barWidth / 2, bottom + 18);
+      context.rotate(-Math.PI / 4);
+      context.fillText(item.label, 0, 0);
+      context.restore();
+    }
   });
   context.textAlign = "left";
   context.fillStyle = "#66716b";
@@ -1512,20 +1546,13 @@ function formatBarValue(value) {
 async function loadProblems() {
   problems = [];
   try {
-    const stored = localStorage.getItem(PROBLEMS_KEY);
-    if (stored) {
-      const data = JSON.parse(stored);
-      if (Array.isArray(data)) {
-        problems = data;
-      } else if (Array.isArray(data.problems)) {
-        problems = data.problems;
-      }
-      const loadedIds = new Set();
-      problems = problems.map((problem) => validateProblemObject(problem, loadedIds));
-    }
+    await window.NanikiruProblemStore.initialize();
+    const data = await window.NanikiruProblemStore.loadAll();
+    const loadedIds = new Set();
+    problems = data.map((problem) => validateProblemObject(problem, loadedIds));
   } catch (error) {
     console.error("Failed to load problems:", error);
-    problems = [];
+    throw new Error(`問題データを読み込めませんでした。${error.message}`);
   }
   if (!localStorage.getItem(GENRE_ORDER_KEY)) {
     const ordered = [...problems]
@@ -1543,9 +1570,29 @@ async function saveProblems({ changedIds = [], deletedIds = [] } = {}) {
   if (!Array.isArray(changedIds) || !Array.isArray(deletedIds) || (!changedIds.length && !deletedIds.length)) {
     throw new Error("saveProblemsにはchangedIdsまたはdeletedIdsの指定が必要です。");
   }
-  localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+  // 保存経路を一か所に集約して正規化する。編集画面以外（類題生成・一括更新）
+  // から入った問題も、クラウドへ送る前に同じ検査を必ず受ける。
+  const changed = new Set(changedIds);
+  const ids = new Set();
+  problems = problems.map((problem) => {
+    const normalized = changed.has(problem.id) ? normalizeProblemForStorage(problem) : problem;
+    return validateProblemObject(normalized, ids);
+  });
+  const changedProblems = problems
+    .map((problem, order) => ({ problem, order }))
+    .filter(({ problem }) => changed.has(problem.id));
+  // Protect the new in-memory value before the first asynchronous write. A
+  // realtime cloud snapshot may arrive while IndexedDB is being committed.
   changedIds.forEach((problemId) => markProblemDirty(problemId, "問題を保存"));
   deletedIds.forEach((problemId) => markProblemDirty(problemId, "問題を削除", true));
+  try {
+    await window.NanikiruProblemStore.upsertMany(changedProblems);
+    await window.NanikiruProblemStore.removeMany(deletedIds);
+    await window.NanikiruProblemStore.flush();
+  } catch (error) {
+    console.error("Failed to save problems to IndexedDB:", error);
+    throw new Error(`問題を保存できませんでした。${error.message}`);
+  }
 }
 
 function restoreLocalStorageSnapshot(snapshot) {
@@ -1667,11 +1714,13 @@ function bindExport() {
   const resetAllBtn = $("reset-all-data");
   const promptDumpBtn = $("backup-prompt-download");
   const promptLaterBtn = $("backup-prompt-later");
+  const shapleyBackfillBtn = $("calculate-missing-shapley");
   
   if (dumpBtn) dumpBtn.addEventListener("click", dumpProblems);
   if (restoreInput) restoreInput.addEventListener("change", restoreDump);
   if (copyBtn) copyBtn.addEventListener("click", copyBase64);
   if (resetAllBtn) resetAllBtn.addEventListener("click", resetAllData);
+  if (shapleyBackfillBtn) shapleyBackfillBtn.addEventListener("click", calculateMissingShapleyStats);
   [
     "review-first-correct-days",
     "review-wrong-retry-days",
@@ -1923,7 +1972,7 @@ async function analyzeWithWasm(handText, melds, payload, options = {}) {
     raw = await wasmAnalyze(buildLegacySituationalEnginePayload(enginePayload, settings));
   }
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
-  if (raw.engine_version !== "0.9.13" || raw.api_version !== 1) {
+  if (raw.engine_version !== "0.9.14" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
   const simulation = summarizeWasmResult(raw, payload.turn, settings);
@@ -1961,6 +2010,92 @@ function simulatorStatsNeedRefresh(simulation, settings = loadReviewSettings()) 
   if (simulation.details_complete === false) return true;
   if (simulation.settings_signature !== simulatorSettingsSignature(settings)) return true;
   return simulation.rows.some((row) => !Array.isArray(row.yaku_contributions));
+}
+
+function shapleyBackfillTargets() {
+  const settings = loadReviewSettings();
+  return problems.filter((problem) => simulatorStatsNeedRefresh(problem.simulator, settings));
+}
+
+function renderShapleyBackfillState() {
+  const count = $("shapley-backfill-count");
+  const button = $("calculate-missing-shapley");
+  if (!count || !button) return;
+  const missing = shapleyBackfillTargets().length;
+  count.textContent = `対象 ${missing.toLocaleString("ja-JP")}問 / 全${problems.length.toLocaleString("ja-JP")}問`;
+  if (activeShapleyBackfill) return;
+  button.disabled = missing === 0;
+  button.textContent = "未計算のShapleyをすべて計算";
+}
+
+async function calculateMissingShapleyStats() {
+  const button = $("calculate-missing-shapley");
+  const status = $("shapley-backfill-status");
+  if (activeShapleyBackfill) {
+    activeShapleyBackfill.stopRequested = true;
+    button.disabled = true;
+    button.textContent = "停止中…";
+    resetWasmWorker(new Error("Shapley一括計算を停止しました。"));
+    return;
+  }
+  const targetIds = shapleyBackfillTargets().map((problem) => problem.id);
+  if (!targetIds.length) {
+    status.className = "message ok";
+    status.textContent = "Shapley計算が必要な問題はありません。";
+    renderShapleyBackfillState();
+    return;
+  }
+  const task = { stopRequested: false };
+  activeShapleyBackfill = task;
+  button.disabled = false;
+  button.textContent = "処理を停止";
+  let completed = 0;
+  let failed = 0;
+  try {
+    for (let index = 0; index < targetIds.length; index++) {
+      if (task.stopRequested) break;
+      const problemId = targetIds[index];
+      // saveProblems normalizes the complete collection and replaces object
+      // references. Always resolve the current object by ID instead of keeping
+      // the stale references captured when the batch started.
+      const problem = problems.find((item) => item.id === problemId);
+      status.className = "message busy";
+      status.textContent = `全${targetIds.length}問中 ${index + 1}問目を処理中（完了 ${completed}問・失敗 ${failed}問）`;
+      if (!problem) {
+        failed++;
+        console.error(`Shapley backfill target disappeared: ${problemId}`);
+        continue;
+      }
+      const previousSimulation = problem.simulator;
+      try {
+        problem.simulator = await analyzeWithWasm(
+          problem.hand,
+          problem.melds || [],
+          problemPayload(problem),
+          { includeYakuStats: true },
+        );
+        await saveProblems({ changedIds: [problemId] });
+        const persisted = await window.NanikiruProblemStore.get(problemId);
+        if (simulatorStatsNeedRefresh(persisted?.simulator)) {
+          throw new Error("計算結果を端末へ保存できませんでした。");
+        }
+        completed++;
+      } catch (error) {
+        const currentProblem = problems.find((item) => item.id === problemId);
+        if (currentProblem) currentProblem.simulator = previousSimulation;
+        if (task.stopRequested) break;
+        failed++;
+        console.error(`Shapley backfill failed for ${problemId}`, error);
+      }
+    }
+    status.className = `message ${failed ? "error" : "ok"}`;
+    status.textContent = task.stopRequested
+      ? `停止しました。全${targetIds.length}問中 ${completed}問完了・${failed}問失敗。`
+      : `完了しました。全${targetIds.length}問中 ${completed}問完了・${failed}問失敗。`;
+  } finally {
+    if (activeShapleyBackfill === task) activeShapleyBackfill = null;
+    renderShapleyBackfillState();
+  }
 }
 
 async function refreshQuizSimulatorStats(presentedProblem, answers, selectedTile) {
@@ -2053,7 +2188,7 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     t_min: turn,
     ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
     remaining_tiles: Math.min(70, Math.max(0, (18 - turn) * 4)),
-    version: "0.9.13",
+    version: "0.9.14",
   };
   if (settings.simulator_enable_situational_hazard) {
     Object.assign(enginePayload, {
@@ -2916,7 +3051,30 @@ async function generateWithWasm() {
       }
     }
     shuffleArray(qualified);
-    const accepted = qualified.slice(0, requested);
+    let accepted = qualified.slice(0, requested);
+    if (fastGeneration && accepted.length) {
+      const enriched = [];
+      for (let index = 0; index < accepted.length; index++) {
+        const problem = accepted[index];
+        setAdminMessage(
+          `採用した類題の役別Shapleyを計算しています（${index + 1}/${accepted.length}）`,
+          "busy",
+        );
+        try {
+          problem.simulator = await analyzeWithWasm(
+            problem.hand,
+            problem.melds || [],
+            problemPayload(problem),
+            { includeYakuStats: true },
+          );
+          enriched.push(problem);
+          generation.completedCount = enriched.length;
+        } catch (error) {
+          console.error(`Generated problem Shapley calculation failed for ${problem.id}`, error);
+        }
+      }
+      accepted = enriched;
+    }
     pending.push(...accepted);
     await registerProblems(pending);
     const degrees = degreeCounts(accepted.map((problem) => problem.transform));
@@ -2930,7 +3088,7 @@ async function generateWithWasm() {
       ? `途中で停止し、完成済みの${accepted.length}問を登録しました。`
       : `${accepted.length}問を登録しました。`;
     setAdminMessage(
-      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${stoppedText}元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、役別詳細は問題を開いたときに補完します。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
+      `${candidates.length}候補から条件を満たした${qualified.length}問を見つけ、${stoppedText}元問題も登録済みです。${queryText}許容乖離率${formatPercent(sourceConditions.tolerance_percent)}%以下・${sourceConditions.max_rank}位以内・${sourceConditions.next_worse_rank}位との乖離${formatOptionalPercent(sourceConditions.next_worse_gap_percent)}。${degreeText}。重複除外: ${skippedDuplicates}問。${fastGeneration ? "オンライン多段探索を使用し、登録した類題の役別Shapleyも計算済みです。" : ""}${fallbackUsed ? "一部の候補はWeb版の軽量モードで検証しました。" : ""}`,
       "ok"
     );
     renderVerification(sourceVerification);
@@ -3116,8 +3274,8 @@ function resumeProblem(problemId) {
   state.suspended = false;
   state.wrongTransitionCount = 0;
   delete state.suspendedAt;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problemId, "問題の休止を解除");
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   const message = $("manage-message");
   if (message) {
     message.className = "message ok";
@@ -3316,7 +3474,7 @@ async function saveEditedProblem(problem) {
     if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
       throw new Error("指定解答は手牌に含まれる牌を指定してください。");
     }
-    const candidate = {
+    let candidate = {
       ...problem,
       hand: tilesToMpszClient(hand),
       answers,
@@ -3325,6 +3483,7 @@ async function saveEditedProblem(problem) {
       note: $("preview-note").value.trim(),
       prompt_note: $("preview-prompt-note").value.trim(),
     };
+    candidate = normalizeProblemForStorage(candidate);
     const shouldUpdateRelated = !problem.source_id && Boolean($("preview-update-related")?.checked);
     const relatedProblems = shouldUpdateRelated
       ? problems.filter((item) => item.source_id === problem.id)
@@ -3455,8 +3614,8 @@ async function deleteEditedProblem(problem) {
   problems = problems.filter((item) => item.id !== problem.id);
   const history = loadHistory();
   delete history[problem.id];
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   markProgressDirty(problem.id, "問題と学習履歴を削除", true);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   selectedManagedProblemId = null;
   await saveProblems({ deletedIds: [problem.id] });
   $("problem-preview").classList.add("hidden");
@@ -3495,6 +3654,7 @@ async function resetAllData() {
   if (!confirm(prompt)) return;
   try {
     if (signedIn) await cloud.deleteCloudData();
+    await window.NanikiruProblemStore.clear();
     localStorage.clear();
     problems = [];
     location.reload();
@@ -3533,17 +3693,39 @@ async function restoreDump(event) {
   }
 }
 
-function copyBase64() {
+async function copyBase64() {
   const base64Output = $("base64-output");
-  if (base64Output && base64Output.value) {
-    base64Output.select();
-    document.execCommand("copy");
-    const btn = $("copy-base64");
-    const originalText = btn.textContent;
+  const btn = $("copy-base64");
+  const exportMsg = $("export-message");
+  if (!base64Output || !btn) return;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "生成中…";
+  try {
+    const value = base64Output.value || await encodeCurrentSave();
+    base64Output.value = value;
+    let copied = false;
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(value); copied = true; }
+      catch (error) { console.warn("Clipboard API failed; trying selection fallback", error); }
+    }
+    if (!copied) {
+      base64Output.focus();
+      base64Output.select();
+      copied = document.execCommand("copy") === true;
+    }
+    if (!copied) throw new Error("クリップボードへコピーできませんでした。テキスト欄を選択して手動でコピーしてください。");
     btn.textContent = "コピーしました";
+    if (exportMsg) { exportMsg.className = "message ok"; exportMsg.textContent = "セーブデータをコピーしました。"; }
     setTimeout(() => {
       btn.textContent = originalText;
+      btn.disabled = false;
     }, 2000);
+  } catch (error) {
+    console.error("Failed to copy save data", error);
+    btn.textContent = originalText;
+    btn.disabled = false;
+    if (exportMsg) { exportMsg.className = "message error"; exportMsg.textContent = error.message; }
   }
 }
 
@@ -3658,11 +3840,108 @@ function validateProblemObject(problem, ids = new Set()) {
   return { ...problem, id, genre, hand, note, prompt_note: promptNote, answers: [...problem.answers] };
 }
 
+function strictTilesFromMpsz(value, label) {
+  const compact = String(value ?? "").toLowerCase().replace(/\s+/g, "");
+  if (!compact || !/^(?:[0-9]+[mpsz])+$/.test(compact)) throw new Error(`${label}の入力形式が不正です。`);
+  const tiles = parseMpsz(compact);
+  if (!tiles.length || tiles.some((tile) => {
+    const rank = Number(tile[0]);
+    return tile[1] === "z" ? rank < 1 || rank > 7 : rank < 0 || rank > 9;
+  })) throw new Error(`${label}に存在しない牌があります。`);
+  return tiles;
+}
+
+function normalizeMeldsForStorage(problem) {
+  const source = Array.isArray(problem.melds)
+    ? problem.melds
+    : (problem.melds_text ? parseMeldsClient(String(problem.melds_text)) : []);
+  if (source.length > 4) throw new Error("副露は4組までです。");
+  return source.map((meld, index) => {
+    if (!meld || typeof meld !== "object" || !Array.isArray(meld.tiles) || meld.tiles.length !== 3) throw new Error(`副露${index + 1}組目の形式が不正です。`);
+    const tiles = meld.tiles.map((tile) => {
+      if (typeof tile !== "string" || !/^[0-9][mpsz]$/.test(tile)) throw new Error(`副露${index + 1}組目に不正な牌があります。`);
+      return strictTilesFromMpsz(tile, `副露${index + 1}組目`)[0];
+    });
+    const parsed = parseMeldsClient(tilesToMpszClient(tiles));
+    if (parsed.length !== 1) throw new Error(`副露${index + 1}組目の形式が不正です。`);
+    return parsed[0];
+  });
+}
+
+function normalizeProblemForStorage(problem) {
+  const id = String(problem?.id || "");
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error("問題IDが不正です。");
+  const melds = normalizeMeldsForStorage(problem);
+  const hand = strictTilesFromMpsz(problem.hand, "手牌");
+  const expectedTiles = 14 - melds.length * 3;
+  if (hand.length !== expectedTiles) throw new Error(`副露${melds.length}組では手牌を${expectedTiles}枚にしてください。`);
+  validateCombinedTileCounts(hand, melds);
+  if (!Array.isArray(problem.answers)) throw new Error("指定解答の形式が不正です。");
+  const answers = [...new Set(problem.answers.map((answer) => {
+    if (typeof answer !== "string" || !/^[0-9][mpsz]$/.test(answer)) throw new Error("指定解答に不正な牌があります。");
+    return strictTilesFromMpsz(answer, "指定解答")[0];
+  }).map(normalizePhysicalTile))];
+  if (!answers.length) throw new Error("指定解答を入力してください。");
+  if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) throw new Error("指定解答は手牌に含まれる牌を指定してください。");
+  const value = validateProblemObject({
+    ...problem,
+    id,
+    hand: tilesToMpszClient(hand),
+    melds,
+    melds_text: melds.map((meld) => meld.mpsz).join(" "),
+    answers,
+    primary_answer: answers[0],
+    genre: String(problem.genre || "未分類").trim() || "未分類",
+    note: String(problem.note || "").trim(),
+    prompt_note: String(problem.prompt_note || "").trim(),
+  });
+  try {
+    if (JSON.stringify(value).length > 750000) throw new Error("問題データが大きすぎます。");
+  } catch (error) {
+    if (error?.message) throw error;
+    throw new Error("問題データを保存できる形式に変換できません。");
+  }
+  return value;
+}
+
+// 以前の版は問題本体の細かな形式までクラウド側で検査していなかったため、
+// 古い端末から送られたレコードが新しい検査で止まることがある。内容を捨てずに
+// 現行形式へ寄せるための、クラウド復旧専用の最小限の変換である。
+function repairProblemObject(problem, expectedId) {
+  const changes = [];
+  const source = problem && typeof problem === "object" && !Array.isArray(problem) ? { ...problem } : {};
+  if (source.id !== expectedId) { source.id = expectedId; changes.push("問題IDをクラウドのIDに合わせました"); }
+  const text = (key, fallback, maximum) => {
+    let value = source[key];
+    if (value == null) value = fallback;
+    if (typeof value !== "string") { value = String(value); changes.push(`${key}を文字列に変換しました`); }
+    if (value.length > maximum) { value = value.slice(0, maximum); changes.push(`${key}を上限まで短縮しました`); }
+    source[key] = value;
+  };
+  text("genre", "未分類", 100); text("hand", "", 100); text("note", "", 10000); text("prompt_note", "", 2000);
+  let answers = source.answers;
+  if (!Array.isArray(answers)) answers = source.answer ?? source.primary_answer ?? [];
+  if (typeof answers === "string") answers = answers.match(/[0-9][mpsz]/g) || [];
+  if (!Array.isArray(answers)) answers = [];
+  const safeAnswers = answers.filter((answer) => typeof answer === "string" && /^[0-9][mpsz]$/.test(answer)).slice(0, 34);
+  if (JSON.stringify(safeAnswers) !== JSON.stringify(answers)) changes.push("指定解答から不正な値を除外しました");
+  source.answers = safeAnswers;
+  if (source.source_id != null && !/^[A-Za-z0-9_-]{1,128}$/.test(String(source.source_id))) { delete source.source_id; changes.push("不正な加工元IDを除外しました"); }
+  if (source.melds != null && (!Array.isArray(source.melds) || source.melds.length > 4 || source.melds.some((meld) => !meld || typeof meld !== "object" || String(meld.name || "").length > 100))) {
+    delete source.melds; changes.push("不正な副露情報を除外しました");
+  }
+  if (!Object.keys(source).length) {
+    source.id = expectedId; source.genre = "復旧済み（要確認）"; source.hand = ""; source.answers = []; source.note = "クラウド上の問題データを復旧しました。内容を確認してください。"; source.prompt_note = "";
+    changes.push("読み取れない問題を確認用の空問題として復旧しました");
+  }
+  return { value: validateProblemObject(source), changes };
+}
+
 async function applySaveData(data, options = {}) {
   const normalized = normalizeSaveData(data);
   return withCloudUploadSuppressed(async () => {
     problems = normalized.p;
-    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
+    await window.NanikiruProblemStore.replaceAll(problems);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(normalized.h || {}));
     localStorage.setItem(REVIEW_SETTINGS_KEY, JSON.stringify(normalized.s || DEFAULT_REVIEW_SETTINGS));
     localStorage.setItem(ADMIN_COUNT_KEY, String(Math.max(1, Math.min(100, Number(normalized.a) || DEFAULT_ADMIN_COUNT))));
@@ -3715,7 +3994,8 @@ async function withCloudUploadSuppressed(callback) {
 }
 
 function clearActiveAppData() {
-  [PROBLEMS_KEY, HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY, GENRE_ORDER_KEY].forEach((key) => localStorage.removeItem(key));
+  [HISTORY_KEY, REVIEW_SETTINGS_KEY, ADMIN_COUNT_KEY, GENRE_ORDER_KEY].forEach((key) => localStorage.removeItem(key));
+  window.NanikiruProblemStore?.clear().catch((error) => console.error("Failed to clear IndexedDB problems", error));
   problems = [];
 }
 
@@ -3724,6 +4004,7 @@ function exposeSaveDataApi() {
     buildSaveData, encodeSaveData, encodeCurrentSave, decodeSaveData, applySaveData,
     applyEncodedSave, hasMeaningfulLocalData, withCloudUploadSuppressed, clearActiveAppData,
     getProblem: (problemId) => problems.find((problem) => problem.id === problemId) || null,
+    repairProblem: (problem, expectedId) => repairProblemObject(problem, expectedId),
     getProgress: (problemId) => loadHistory()[problemId] || null,
     getSettings: () => ({ reviewSettings: loadReviewSettings(), adminCount: loadAdminCount(), genreOrder: loadGenreOrder() }),
     applyCloudRecords,
@@ -3733,7 +4014,6 @@ function exposeSaveDataApi() {
 
 async function applyCloudRecords({ problemRecords = [], progressRecords = [], settingsRecord = null } = {}) {
   return withCloudUploadSuppressed(async () => {
-    const history = loadHistory();
     problemRecords.forEach((record) => {
       const index = problems.findIndex((problem) => problem.id === record.problemId);
       if (record.deleted) {
@@ -3745,12 +4025,21 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
         else problems.push(value);
       }
     });
-    progressRecords.forEach((record) => {
-      if (record.deleted) delete history[record.problemId];
-      else history[record.problemId] = record.value;
-    });
-    localStorage.setItem(PROBLEMS_KEY, JSON.stringify(problems));
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    const changed = new Set(problemRecords.filter((record) => !record.deleted).map((record) => record.problemId));
+    await window.NanikiruProblemStore.upsertMany(problems.map((problem, order) => ({ problem, order })).filter(({ problem }) => changed.has(problem.id)));
+    await window.NanikiruProblemStore.removeMany(problemRecords.filter((record) => record.deleted).map((record) => record.problemId));
+    await window.NanikiruProblemStore.flush();
+    // Problem and settings snapshots must never write back a stale copy of the
+    // full learning history. Read the latest history only after asynchronous
+    // problem persistence, and touch it only when progress records exist.
+    if (progressRecords.length) {
+      const history = loadHistory();
+      progressRecords.forEach((record) => {
+        if (record.deleted) delete history[record.problemId];
+        else history[record.problemId] = record.value;
+      });
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    }
     if (settingsRecord) {
       const safeSettings = sanitizeReviewSettings(settingsRecord.reviewSettings || {});
       if (!Array.isArray(settingsRecord.genreOrder) || settingsRecord.genreOrder.some((genre) => typeof genre !== "string" || genre.length > 100)) throw new Error("クラウドのジャンル順が不正です。");
@@ -3763,6 +4052,7 @@ async function applyCloudRecords({ problemRecords = [], progressRecords = [], se
     renderReviewSettings(); renderAdminCount(); refreshGenres();
     if (currentView === "manage") renderAdminProblems();
     if (currentView === "stats") renderStats();
+    if (currentView === "export") renderShapleyBackfillState();
   });
 }
 
@@ -4493,6 +4783,12 @@ function samePhysicalTile(left, right) {
 function assetName(tile) {
   if (tile[0] === "0") {
     return ({ m: "aka3", p: "aka1", s: "aka2" })[tile[1]] + "-66-90-s.png";
+  }
+  // The honor-tile asset set orders green dragon before white dragon,
+  // while mpsz uses 5z = white and 6z = green.
+  if (tile[1] === "z") {
+    const honorAssets = { "5": "ji6", "6": "ji5" };
+    if (honorAssets[tile[0]]) return `${honorAssets[tile[0]]}-66-90-s.png`;
   }
   const prefixes = { m: "man", p: "pin", s: "sou", z: "ji" };
   return `${prefixes[tile[1]]}${tile[0]}-66-90-s.png`;

@@ -52,6 +52,20 @@
     return Number.isFinite(from) && Number.isFinite(to) ? Math.round((to - from) / DAY) : 0;
   }
 
+  function storedIntervalDays(value) {
+    if ((typeof value !== "number" && typeof value !== "string") || String(value).trim() === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? normalizeDelayDays(parsed) : null;
+  }
+
+  function reviewDueAt(answeredAt, delayDays, boundaryMinutes = 0) {
+    const logicalDay = logicalDayUtcMs(answeredAt, boundaryMinutes);
+    if (!Number.isFinite(logicalDay)) return NaN;
+    return logicalDay - 9 * 60 * 60 * 1000
+      + sanitizeBoundaryMinutes(boundaryMinutes) * 60 * 1000
+      + normalizeDelayDays(delayDays) * DAY;
+  }
+
   function normalizedSettings(settings = {}) {
     return {
       first_correct_days: finiteNonNegative(settings.first_correct_days, 7),
@@ -88,19 +102,75 @@
 
   function intervalForAttempt(attempts, index, settings) {
     const attempt = attempts[index];
-    const stored = Number(attempt?.intervalDays);
-    if (Number.isFinite(stored) && stored >= 0) return normalizeDelayDays(stored);
+    const stored = storedIntervalDays(attempt?.intervalDays);
+    if (stored !== null) return stored;
     return calculateReviewDelayDays(attempts.slice(0, index), Boolean(attempt?.correct), attempt?.at, settings);
   }
 
-  function currentIntervalDays(state, attempts, settings) {
+  function intervalFromDueAt(state, attempts, settings) {
     if (!attempts.length) return 0;
     const last = attempts[attempts.length - 1];
     const dueAt = Number(state?.dueAt);
     if (Number.isFinite(dueAt) && dueAt > 0) {
       return Math.max(0, calendarDaysDiff(last.at, dueAt, settings.day_boundary_minutes));
     }
-    return intervalForAttempt(attempts, attempts.length - 1, settings);
+    return null;
+  }
+
+  function normalizeReviewState(rawState, rawSettings = {}) {
+    const settings = normalizedSettings(rawSettings);
+    const source = rawState && typeof rawState === "object" ? rawState : {};
+    const sourceAttempts = Array.isArray(source.attempts) ? source.attempts : [];
+    const attempts = sourceAttempts
+      .filter((attempt) => attempt && Number.isFinite(Number(attempt.at)))
+      .map((attempt) => ({ ...attempt, at: Number(attempt.at) }))
+      .sort((left, right) => left.at - right.at);
+    const dueInterval = intervalFromDueAt(source, attempts, settings);
+
+    attempts.forEach((attempt, index) => {
+      const stored = storedIntervalDays(attempt.intervalDays);
+      let intervalDays;
+      if (stored !== null) {
+        intervalDays = stored;
+      } else if (index === attempts.length - 1 && dueInterval !== null) {
+        const previous = attempts[index - 1];
+        const elapsedDays = previous
+          ? Math.max(0, calendarDaysDiff(previous.at, attempt.at, settings.day_boundary_minutes))
+          : 0;
+        // A previous release stored only the short post-error delay after a
+        // later correct answer. Preserve the existing one-time repair while
+        // making the repaired interval explicit in the attempt itself.
+        intervalDays = attempt.correct && previous?.correct === false && elapsedDays > 0
+          && dueInterval === normalizeDelayDays(settings.wrong_then_correct_days)
+          ? calculateReviewDelayDays(attempts.slice(0, index), true, attempt.at, settings)
+          : dueInterval;
+      } else {
+        intervalDays = intervalForAttempt(attempts, index, settings);
+      }
+      attempt.intervalDays = intervalDays;
+    });
+
+    const state = { ...source, attempts };
+    if (attempts.length) {
+      const last = attempts[attempts.length - 1];
+      state.dueAt = reviewDueAt(last.at, last.intervalDays, settings.day_boundary_minutes);
+    }
+    const changed = JSON.stringify(state) !== JSON.stringify(source);
+    return { state, changed };
+  }
+
+  function currentReviewIntervalDays(state, rawSettings = {}) {
+    const settings = normalizedSettings(rawSettings);
+    const attempts = Array.isArray(state?.attempts)
+      ? state.attempts.filter((attempt) => Number.isFinite(Number(attempt?.at))).slice().sort((a, b) => Number(a.at) - Number(b.at))
+      : [];
+    if (!attempts.length) return 0;
+    const lastInterval = storedIntervalDays(attempts[attempts.length - 1]?.intervalDays);
+    if (lastInterval !== null) return lastInterval;
+    const dueInterval = intervalFromDueAt(state, attempts, settings);
+    return dueInterval === null
+      ? intervalForAttempt(attempts, attempts.length - 1, settings)
+      : dueInterval;
   }
 
   function monthIndex(key) {
@@ -123,7 +193,8 @@
     const events = new Map();
     let startingMature = 0;
     let currentMature = 0;
-    let adjustmentCount = 0;
+    let todayAnsweredProblems = 0;
+    let todayMatureProblems = 0;
     let earliestAttempt = Infinity;
 
     const eventKey = (at) => {
@@ -132,21 +203,33 @@
       const offset = Math.min(0, Math.round((eventDay - currentDay) / DAY));
       return offset;
     };
-    const addEvent = (key, delta) => events.set(key, (events.get(key) || 0) + delta);
+    const addEvent = (key, delta) => {
+      const event = events.get(key) || { gained: 0, lost: 0 };
+      if (delta > 0) event.gained += delta;
+      if (delta < 0) event.lost += Math.abs(delta);
+      events.set(key, event);
+    };
 
-    const currentProblems = Array.isArray(problems) ? problems : [];
+    // 学習履歴は成績の正本である。問題が端末間同期の不整合や削除によって
+    // 一覧から一時的に欠けても、残っている回答履歴を集計から捨てない。
+    const suppliedProblems = Array.isArray(problems) ? problems : [];
+    const problemById = new Map(suppliedProblems
+      .filter((problem) => problem?.id)
+      .map((problem) => [problem.id, problem]));
+    Object.keys(history || {}).forEach((id) => {
+      if (!problemById.has(id)) problemById.set(id, { id });
+    });
+    const currentProblems = [...problemById.values()];
     currentProblems.forEach((problem) => {
-      const state = history?.[problem?.id] || {};
-      const attempts = Array.isArray(state.attempts)
-        ? state.attempts.filter((attempt) => Number.isFinite(Number(attempt?.at))).slice().sort((a, b) => Number(a.at) - Number(b.at))
-        : [];
+      const state = normalizeReviewState(history?.[problem?.id] || {}, settings).state;
+      const attempts = state.attempts;
       let reconstructedMature = false;
       let baselineCaptured = !normalizedPeriodDays;
 
       attempts.forEach((attempt, index) => {
         const at = Number(attempt.at);
         earliestAttempt = Math.min(earliestAttempt, at);
-        const nextMature = intervalForAttempt(attempts, index, settings) >= thresholdDays;
+        const nextMature = intervalForAttempt(attempts, index, settings) > thresholdDays;
         const offset = Math.round((logicalDayUtcMs(at, settings.day_boundary_minutes) - currentDay) / DAY);
         if (normalizedPeriodDays && offset < minimumOffset) {
           reconstructedMature = nextMature;
@@ -165,12 +248,11 @@
         baselineCaptured = true;
       }
 
-      const exactCurrentMature = attempts.length
-        ? currentIntervalDays(state, attempts, settings) >= thresholdDays
-        : false;
-      if (exactCurrentMature !== reconstructedMature) {
-        addEvent(normalizedPeriodDays ? 0 : dayKey(now, settings.day_boundary_minutes).slice(0, 7), exactCurrentMature ? 1 : -1);
-        adjustmentCount++;
+      const exactCurrentMature = reconstructedMature;
+      const answeredToday = attempts.some((attempt) => logicalDayUtcMs(attempt.at, settings.day_boundary_minutes) === currentDay);
+      if (answeredToday) {
+        todayAnsweredProblems++;
+        if (exactCurrentMature) todayMatureProblems++;
       }
       if (exactCurrentMature) currentMature++;
     });
@@ -185,9 +267,10 @@
     if (normalizedPeriodDays) {
       for (let offset = minimumOffset; offset <= 0; offset++) {
         const key = new Date(currentDay + offset * DAY).toISOString().slice(0, 10);
-        const net = events.get(offset) || 0;
+        const event = events.get(offset) || { gained: 0, lost: 0 };
+        const net = event.gained - event.lost;
         cumulative += net;
-        points.push({ key, label: key.slice(5), net, cumulative });
+        points.push({ key, label: key.slice(5), gained: event.gained, lost: event.lost, net, cumulative });
       }
     } else {
       const currentMonth = monthIndex(dayKey(now, settings.day_boundary_minutes).slice(0, 7));
@@ -197,17 +280,11 @@
       const startMonth = Math.min(monthIndex(startKey), currentMonth);
       for (let index = startMonth; index <= currentMonth; index++) {
         const key = monthKey(index);
-        const net = events.get(key) || 0;
+        const event = events.get(key) || { gained: 0, lost: 0 };
+        const net = event.gained - event.lost;
         cumulative += net;
-        points.push({ key, label: key, net, cumulative });
+        points.push({ key, label: key, gained: event.gained, lost: event.lost, net, cumulative });
       }
-    }
-
-    if (points.length && cumulative !== currentMature) {
-      const correction = currentMature - cumulative;
-      points[points.length - 1].net += correction;
-      points[points.length - 1].cumulative = currentMature;
-      adjustmentCount++;
     }
 
     return {
@@ -215,9 +292,11 @@
       periodDays: normalizedPeriodDays,
       bucketUnit: normalizedPeriodDays ? "day" : "month",
       currentMature,
+      todayAnsweredProblems,
+      todayMatureProblems,
       startingMature,
       netChange: currentMature - startingMature,
-      adjustmentCount,
+      adjustmentCount: 0,
       firstProblemDate: Number.isFinite(earliestRegistration)
         ? dayKey(earliestRegistration, settings.day_boundary_minutes)
         : null,
@@ -229,6 +308,8 @@
     DEFAULT_MATURE_INTERVAL_DAYS,
     sanitizeMatureIntervalDays,
     calculateReviewDelayDays,
+    currentReviewIntervalDays,
+    normalizeReviewState,
     buildNetMatureStats,
   });
 })(globalThis);

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "engine:update": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-engine.ps1",
-    "test:unit": "node --test tests/cloud-sync-core.test.mjs tests/net-mature-core.test.mjs",
+    "test:unit": "node --test tests/cloud-sync-core.test.mjs tests/net-mature-core.test.mjs tests/problem-store.test.mjs",
     "test:rules": "firebase emulators:exec --only firestore \"node --test tests/firestore-rules.test.mjs\"",
     "test:python": "python -m pytest tests/test_tiles_and_transforms.py -q",
     "test:browser": "playwright test --config=playwright.config.cjs",
@@ -13,6 +13,7 @@
   "devDependencies": {
     "@firebase/rules-unit-testing": "5.0.1",
     "@playwright/test": "1.53.2",
+    "fake-indexeddb": "^6.2.4",
     "firebase": "12.15.0",
     "firebase-tools": "15.23.0",
     "playwright": "1.53.2"

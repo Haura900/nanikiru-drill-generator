@@ -9,8 +9,11 @@ import { firebaseConfig, appCheckConfig, isFirebaseConfigured } from "./firebase
 import {
   CLOUD_SCHEMA_VERSION, MAX_PROBLEMS_PER_USER, MAX_PROBLEM_PAYLOAD_CHARS, MAX_PROGRESS_PAYLOAD_CHARS, MAX_SETTINGS_PAYLOAD_CHARS,
   compareMutationVersion, chooseProblemState, chooseProgressState, chooseSettingsState,
+  shouldApplyRemoteMutation,
   nextMutationVersion, joinAndValidateChunks, decomposeLegacySave, decodeSettingsRecord, mergeSettingsPayload,
-} from "./cloud-sync-core.js?v=20260805-2";
+  findLocalIdsMissingFromCatalog,
+} from "./cloud-sync-core.js?v=20260828-1";
+import * as problemStore from "./problem-store.js?v=20260825-1";
 
 const DEVICE_ID_KEY = "nanikiru-device-id-v1";
 const BOUND_UID_KEY = "nanikiru-bound-uid-v1";
@@ -21,6 +24,7 @@ const PROBLEM_VERSIONS_KEY = "nanikiru-problem-versions-v2";
 const PROGRESS_VERSIONS_KEY = "nanikiru-progress-versions-v2";
 const SETTINGS_VERSION_KEY = "nanikiru-settings-version-v2";
 const REPLACE_CLOUD_KEY = "nanikiru-replace-cloud-from-backup-v2";
+const MUTATION_WAL_KEY = "nanikiru-pending-mutation-wal-v1";
 const ACTIVE_KEYS = ["nanikiru-problems-v1", "nanikiru-learning-v1", "nanikiru-review-settings-v1", "nanikiru-admin-count-v1", "nanikiru-genre-order-v1"];
 const listeners = new Set();
 const state = { configured: false, ready: false, user: null, status: "クラウドを確認しています", error: "", lastSync: null, dirty: false, syncing: false };
@@ -41,8 +45,80 @@ const deviceId = (() => {
   return value;
 })();
 
-const readObject = (key) => { try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; } };
-const writeObject = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+const mutationKeys = new Map([
+  [DIRTY_PROBLEMS_KEY, ["problem", "dirty"]], [DIRTY_PROGRESS_KEY, ["progress", "dirty"]],
+  [PROBLEM_VERSIONS_KEY, ["problem", "version"]], [PROGRESS_VERSIONS_KEY, ["progress", "version"]],
+]);
+const mutationCache = { problem: new Map(), progress: new Map() };
+let mutationWriteError = null;
+function readMutationWal() {
+  try {
+    const value = JSON.parse(localStorage.getItem(MUTATION_WAL_KEY) || "{}");
+    return {
+      problem: value?.problem && typeof value.problem === "object" ? value.problem : {},
+      progress: value?.progress && typeof value.progress === "object" ? value.progress : {},
+    };
+  } catch { return { problem: {}, progress: {} }; }
+}
+function stageMutationWal(kind, id, entry) {
+  const wal = readMutationWal();
+  if (entry?.version) wal[kind][id] = entry;
+  else delete wal[kind][id];
+  if (Object.keys(wal.problem).length || Object.keys(wal.progress).length) localStorage.setItem(MUTATION_WAL_KEY, JSON.stringify(wal));
+  else localStorage.removeItem(MUTATION_WAL_KEY);
+}
+function clearMutationWal(kind, id, mutationId) {
+  const wal = readMutationWal();
+  if (wal[kind][id]?.version?.mutationId !== mutationId) return;
+  delete wal[kind][id];
+  if (Object.keys(wal.problem).length || Object.keys(wal.progress).length) localStorage.setItem(MUTATION_WAL_KEY, JSON.stringify(wal));
+  else localStorage.removeItem(MUTATION_WAL_KEY);
+}
+function readObject(key) {
+  const descriptor = mutationKeys.get(key);
+  if (descriptor) {
+    const [kind, field] = descriptor; const result = {};
+    mutationCache[kind].forEach((value, id) => { if (field === "version" || value.dirty) result[id] = value.version; });
+    return result;
+  }
+  try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
+}
+function writeObject(key, value) {
+  const descriptor = mutationKeys.get(key);
+  if (!descriptor) { localStorage.setItem(key, JSON.stringify(value)); return; }
+  const [kind, field] = descriptor; const cache = mutationCache[kind]; const next = value || {};
+  const ids = new Set([...cache.keys(), ...Object.keys(next)]);
+  ids.forEach((id) => {
+    const old = cache.get(id);
+    const version = field === "version" ? next[id] : (next[id] || old?.version);
+    const dirty = field === "dirty" ? Boolean(next[id]) : Boolean(old?.dirty);
+    if (!version) { cache.delete(id); problemStore.putMutation(kind, id, null, false).catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); }); return; }
+    if (old?.version?.mutationId === version.mutationId && old.dirty === dirty) return;
+    const entry = { version, dirty }; cache.set(id, entry); stageMutationWal(kind, id, entry);
+    problemStore.putMutation(kind, id, version, dirty)
+      .then(() => clearMutationWal(kind, id, version.mutationId))
+      .catch((error) => { mutationWriteError = error; console.error("Failed to persist sync mutation", error); });
+  });
+}
+async function initializeMutationCache() {
+  await problemStore.initialize();
+  for (const kind of ["problem", "progress"]) {
+    const rows = await problemStore.loadMutations(kind);
+    rows.forEach((row) => mutationCache[kind].set(row.id, { version: row.version, dirty: row.dirty }));
+  }
+  // localStorage is used as a tiny synchronous write-ahead log. It survives a
+  // reload that happens before IndexedDB finishes committing the dirty marker.
+  const wal = readMutationWal();
+  for (const kind of ["problem", "progress"]) {
+    for (const [id, entry] of Object.entries(wal[kind])) {
+      const existing = mutationCache[kind].get(id);
+      const timeField = kind === "progress" ? "answeredAt" : "modifiedAt";
+      if (!existing || compareMutationVersion(entry.version, existing.version, timeField) >= 0) mutationCache[kind].set(id, entry);
+      await problemStore.putMutation(kind, id, entry.version, entry.dirty);
+      clearMutationWal(kind, id, entry.version.mutationId);
+    }
+  }
+}
 const hasDirty = () => Object.keys(readObject(DIRTY_PROBLEMS_KEY)).length > 0 || Object.keys(readObject(DIRTY_PROGRESS_KEY)).length > 0 || Boolean(localStorage.getItem(DIRTY_SETTINGS_KEY));
 
 function emit(patch = {}) {
@@ -57,6 +133,12 @@ function messageFor(error) {
   if (error?.code === "permission-denied") return "同期の権限がありません";
   if (error?.code === "auth/unauthorized-domain") return "このドメインはGoogleログインを許可されていません";
   return error?.message || "同期に失敗しました";
+}
+
+function cloudRepairMessage(result) {
+  if (!result) return "";
+  return result.unrecoverable ? `クラウドの問題データを修復しました（${result.repaired}件、確認が必要な空問題 ${result.unrecoverable}件）。`
+    : `クラウドの問題データを修復しました（${result.repaired}件）。`;
 }
 
 function waitForSaveApi() {
@@ -102,7 +184,7 @@ function markAllDirty({ problemIds = [], progressIds = [], replaceCloud = false 
 function scheduleUpload() {
   clearTimeout(uploadTimer);
   emit({ dirty: true, status: state.user ? (navigator.onLine ? "未同期の変更があります" : "オフライン・未同期") : "ローカルに未同期の変更があります" });
-  if (state.user && navigator.onLine) uploadTimer = setTimeout(() => syncNow(), 1800);
+  if (state.user && navigator.onLine) uploadTimer = setTimeout(() => syncNow(), 100);
 }
 
 function catalogRef(uid) { return doc(db, "users", uid, "sync", "catalog"); }
@@ -178,6 +260,8 @@ async function uploadRecord({ uid, id, local, ref, chooser, timeField, dirtyKey,
 }
 
 async function syncDirty(uid) {
+  await problemStore.flush();
+  if (mutationWriteError) throw mutationWriteError;
   const api = await waitForSaveApi();
   if (localStorage.getItem(REPLACE_CLOUD_KEY) === "1") {
     const catalog = await getDoc(catalogRef(uid));
@@ -276,13 +360,13 @@ async function flushRemoteRecords() {
   const dirtyProblems = readObject(DIRTY_PROBLEMS_KEY); const dirtyProgress = readObject(DIRTY_PROGRESS_KEY);
   const acceptedProblems = []; const acceptedProgress = [];
   problemRecords.forEach((record) => {
-    if (compareMutationVersion(record, problemVersions[record.problemId], "modifiedAt") < 0) return;
+    if (!shouldApplyRemoteMutation(record, problemVersions[record.problemId], dirtyProblems[record.problemId], "modifiedAt")) return;
     acceptedProblems.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
     problemVersions[record.problemId] = { modifiedAt: record.modifiedAt, mutationId: record.mutationId };
     if (dirtyProblems[record.problemId] && compareMutationVersion(record, dirtyProblems[record.problemId], "modifiedAt") >= 0) delete dirtyProblems[record.problemId];
   });
   progressRecords.forEach((record) => {
-    if (compareMutationVersion(record, progressVersions[record.problemId], "answeredAt") < 0) return;
+    if (!shouldApplyRemoteMutation(record, progressVersions[record.problemId], dirtyProgress[record.problemId], "answeredAt")) return;
     acceptedProgress.push({ problemId: record.problemId, deleted: record.deleted, value: record.deleted ? null : JSON.parse(record.payload) });
     progressVersions[record.problemId] = { answeredAt: record.answeredAt, mutationId: record.mutationId };
     if (dirtyProgress[record.problemId] && compareMutationVersion(record, dirtyProgress[record.problemId], "answeredAt") >= 0) delete dirtyProgress[record.problemId];
@@ -340,6 +424,46 @@ async function syncNow() {
   return syncPromise;
 }
 
+async function repairCloudProblems() {
+  if (!state.user || !navigator.onLine) throw new Error("ログインしてオンラインの状態で実行してください。");
+  const proceed = window.confirm("クラウド上の問題データを検査し、古い形式や不正な値を現行形式へ修復します。修復できないレコードは、内容を失わないよう「復旧済み（要確認）」の空問題に置き換えます。続けますか？");
+  if (!proceed) return null;
+  emit({ syncing: true, status: "クラウド問題データを検査・修復中", error: "" });
+  const api = await waitForSaveApi();
+  const snapshot = await getDocs(collection(db, "users", state.user.uid, "problems"));
+  const repairs = [];
+  let unrecoverable = 0;
+  snapshot.docs.forEach((item) => {
+    const record = item.data();
+    if (record.deleted) return;
+    let value;
+    try { value = JSON.parse(record.payload); }
+    catch { value = null; }
+    let repaired;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      repaired = { value: { id: item.id, genre: "復旧済み（要確認）", hand: "", answers: [], note: "クラウド上の問題データを復旧できなかったため、確認用の空問題に置き換えました。", prompt_note: "" }, changes: ["問題本体を読み取れませんでした"] };
+      unrecoverable++;
+    } else {
+      try { repaired = api.repairProblem(value, item.id); }
+      catch { repaired = { value: { id: item.id, genre: "復旧済み（要確認）", hand: "", answers: [], note: "クラウド上の問題データを復旧できなかったため、確認用の空問題に置き換えました。", prompt_note: "" }, changes: ["問題本体を読み取れませんでした"] }; unrecoverable++; }
+    }
+    const original = value && typeof value === "object" ? JSON.stringify(value) : null;
+    if (original !== JSON.stringify(repaired.value)) repairs.push({ id: item.id, record, value: repaired.value });
+  });
+  if (repairs.length) {
+    await ensureCatalog(state.user.uid, repairs.map((item) => item.id));
+    for (const item of repairs) {
+      const version = nextMutationVersion(item.record, "modifiedAt");
+      await setDoc(problemRef(state.user.uid, item.id), problemRecord(item.id, item.value, { ...version, deleted: false }));
+    }
+  }
+  const result = { repaired: repairs.length, unrecoverable };
+  emit({ syncing: false, status: "クラウド問題データの検査が完了しました", error: "" });
+  await syncNow();
+  window.alert(cloudRepairMessage(result));
+  return result;
+}
+
 async function signIn() {
   try { await signInWithPopup(auth, new GoogleAuthProvider()); }
   catch (error) { emit({ error: messageFor(error) }); }
@@ -391,12 +515,18 @@ async function handleSignedIn(user) {
   await migrateLegacy(user.uid);
   const catalog = await getDoc(catalogRef(user.uid));
   const api = await waitForSaveApi();
-  if (!catalog.exists() && api.hasMeaningfulLocalData()) {
+  if (api.hasMeaningfulLocalData()) {
     const save = api.buildSaveData();
-    markAllDirty({ problemIds: save.p.map((problem) => problem.id), progressIds: Object.keys(save.h || {}) });
+    const missing = findLocalIdsMissingFromCatalog(save, catalog.exists() ? catalog.data().problemIds || [] : []);
+    if (!catalog.exists() || missing.problemIds.length || missing.progressIds.length) {
+      markAllDirty({ problemIds: missing.problemIds, progressIds: missing.progressIds });
+    }
   }
+  // Upload pending local answers before attaching realtime listeners. Otherwise
+  // the initial (older) cloud snapshot can race with and overwrite those answers.
+  if (hasDirty()) await syncNow();
   subscribeRealtime(user.uid);
-  if (hasDirty()) await syncNow(); else emit({ dirty: false, status: "同期済み", lastSync: new Date() });
+  if (!hasDirty()) emit({ dirty: false, status: "同期済み", lastSync: new Date() });
 }
 
 function renderState() {
@@ -412,11 +542,19 @@ function renderState() {
 function bindUi() {
   document.getElementById("cloud-login-button")?.addEventListener("click", signIn);
   document.getElementById("cloud-logout-button")?.addEventListener("click", signOut);
-  document.getElementById("cloud-sync-now")?.addEventListener("click", () => syncNow().catch(() => {})); renderState();
+  document.getElementById("cloud-sync-now")?.addEventListener("click", () => syncNow().catch(() => {}));
+  document.getElementById("cloud-repair-problems")?.addEventListener("click", () => repairCloudProblems().catch(handleError)); renderState();
 }
 
 async function initialize() {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindUi, { once: true }); else bindUi();
+  try { await initializeMutationCache(); }
+  catch (error) {
+    console.error("IndexedDB initialization failed; sync mutations were not discarded", error);
+    emit({ ready: true, configured: false, status: "ローカル保存を初期化できませんでした", error: messageFor(error) });
+    initialAuthResolved();
+    return;
+  }
   if (!isFirebaseConfigured()) { emit({ ready: true, configured: false, status: "クラウド同期は未設定です" }); initialAuthResolved(); return; }
   try {
     const app = initializeApp(firebaseConfig);
@@ -439,8 +577,11 @@ async function initialize() {
 
 window.addEventListener("online", () => { if (state.user) syncNow().catch(() => {}); });
 window.addEventListener("offline", () => emit({ status: state.user ? "オフライン・未同期" : state.status }));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && state.user && hasDirty()) syncNow().catch(() => {});
+});
 window.NanikiruCloud = {
-  signIn, signOut, syncNow, scheduleUpload, deleteCloudData, markProblemDirty, markProgressDirty, markSettingsDirty, markAllDirty,
+  signIn, signOut, syncNow, repairCloudProblems, scheduleUpload, deleteCloudData, markProblemDirty, markProgressDirty, markSettingsDirty, markAllDirty,
   getState: () => ({ ...state }), subscribe(listener) { listeners.add(listener); listener({ ...state }); return () => listeners.delete(listener); },
 };
 window.NANIKIRU_CLOUD_READY = initialAuthPromise;
