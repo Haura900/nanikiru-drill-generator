@@ -74,7 +74,7 @@ const wasmResultMemo = new Map();
 const simulatorDetailRefreshes = new Map();
 let activeShapleyBackfill = null;
 const WASM_RESULT_MEMO_LIMIT = 24;
-const WASM_ASSET_VERSION = "engine-v0.9.14";
+const WASM_ASSET_VERSION = "engine-v0.9.15";
 const WASM_RECYCLE_AFTER = 24;
 const WASM_REQUEST_TIMEOUT = 240000;
 const WASM_DEFAULT_FLAGS = Object.freeze({
@@ -491,10 +491,10 @@ function answerQuestion(tile, clickedButton) {
   if (!currentProblem) return;
   const presentedProblem = currentPresentedProblem || currentProblem;
   const answers = presentedProblem.answers || [presentedProblem.primary_answer];
-  const correct = answers.some((answer) => samePhysicalTile(answer, tile));
+  const correct = answers.some((answer) => answer === tile);
   $("hand").querySelectorAll("button.tile[data-tile]").forEach((button) => {
     button.disabled = true;
-    if (answers.some((answer) => samePhysicalTile(answer, button.dataset.tile))) {
+    if (answers.some((answer) => answer === button.dataset.tile)) {
       button.classList.add("correct");
     }
   });
@@ -1837,7 +1837,7 @@ function manualProblemFromForm(verification = null) {
   if (handTiles.length !== expectedTiles) {
     throw new Error(`副露${melds.length}組では手牌を${expectedTiles}枚にしてください。`);
   }
-  if (answers.some((answer) => !handTiles.some((tile) => samePhysicalTile(tile, answer)))) {
+  if (answers.some((answer) => !handTiles.some((tile) => tile === answer))) {
     throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   }
   return {
@@ -1895,7 +1895,7 @@ async function runWasmVerification(options = {}) {
   validateCombinedTileCounts(hand, melds);
   const answers = parseAnswerTiles(payload.answers);
   if (!answers.length) throw new Error("指定解答を入力してください。");
-  if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
+  if (answers.some((answer) => !hand.some((tile) => tile === answer))) {
     throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   }
   const simulation = await analyzeWithWasm(payload.hand, melds, payload, options);
@@ -1972,7 +1972,7 @@ async function analyzeWithWasm(handText, melds, payload, options = {}) {
     raw = await wasmAnalyze(buildLegacySituationalEnginePayload(enginePayload, settings));
   }
   if (!raw?.success) throw new Error(raw?.err_msg || "シミュレーターが失敗を返しました。");
-  if (raw.engine_version !== "0.9.14" || raw.api_version !== 1) {
+  if (raw.engine_version !== "0.9.15" || raw.api_version !== 1) {
     throw new Error(`シミュレーターの版が一致しません: ${raw.engine_version || "不明"}/API ${raw.api_version ?? "不明"}`);
   }
   const simulation = summarizeWasmResult(raw, payload.turn, settings);
@@ -2007,6 +2007,7 @@ function simulatorSettingsSignature(settings = loadReviewSettings()) {
 
 function simulatorStatsNeedRefresh(simulation, settings = loadReviewSettings()) {
   if (!simulation?.rows?.length) return true;
+  if (simulation.version !== "0.9.15") return true;
   if (simulation.details_complete === false) return true;
   if (simulation.settings_signature !== simulatorSettingsSignature(settings)) return true;
   return simulation.rows.some((row) => !Array.isArray(row.yaku_contributions));
@@ -2188,7 +2189,7 @@ function buildSimulatorEnginePayload(handText, melds, payload, settings, mode, r
     t_min: turn,
     ron_rate: 1 - settings.simulator_tsumo_win_share_percent / 100,
     remaining_tiles: Math.min(70, Math.max(0, (18 - turn) * 4)),
-    version: "0.9.14",
+    version: "0.9.15",
   };
   if (settings.simulator_enable_situational_hazard) {
     Object.assign(enginePayload, {
@@ -2228,7 +2229,7 @@ function calculateAnswerGaps(simulation, answers) {
   const best = simulation.rows[0]?.metric || 0;
   const answerGaps = {};
   answers.forEach((answer) => {
-    const matchingRows = simulation.rows.filter((row) => samePhysicalTile(row.tile, answer));
+    const matchingRows = simulation.rows.filter((row) => row.tile === answer);
     if (!matchingRows.length) throw new Error(`打牌候補にありません: ${answer}`);
     const answerMetric = Math.max(...matchingRows.map((row) => row.metric));
     answerGaps[answer] = Math.max(0, (best - answerMetric) / Math.max(Math.abs(best), 1e-12) * 100);
@@ -2239,7 +2240,7 @@ function calculateAnswerGaps(simulation, answers) {
 function rankedDiscardRows(simulation) {
   const byTile = new Map();
   (simulation?.rows || []).forEach((row) => {
-    const tile = normalizePhysicalTile(row.tile);
+    const tile = row.tile;
     const current = byTile.get(tile);
     if (!current || Number(row.metric) > Number(current.metric)) byTile.set(tile, { ...row, tile });
   });
@@ -2259,7 +2260,7 @@ function rankedDiscardRows(simulation) {
 function calculateAnswerConditions(simulation, answers, boundaryRank = null) {
   const ranked = rankedDiscardRows(simulation);
   const answerRows = answers.map((answer) => {
-    const row = ranked.find((item) => samePhysicalTile(item.tile, answer));
+    const row = ranked.find((item) => item.tile === answer);
     if (!row) throw new Error(`打牌候補にありません: ${answer}`);
     return row;
   });
@@ -3138,7 +3139,7 @@ function renderGeneratedResults(items) {
     const answers = problem.answers || [];
     const answerSummary = answers.map((answer) => {
       const row = rows
-        .filter((item) => samePhysicalTile(item.tile, answer))
+        .filter((item) => item.tile === answer)
         .sort((a, b) => b.metric - a.metric)[0];
       const gap = Number(problem.answer_gaps?.[answer] || 0);
       return `${answer}: 期待値 ${formatNumber(row?.expected_score)} / 乖離 ${formatPercent(gap)}%`;
@@ -3471,7 +3472,7 @@ async function saveEditedProblem(problem) {
     validateCombinedTileCounts(hand, melds);
     const answers = parseAnswerTiles($("preview-answer-input").value);
     if (!answers.length) throw new Error("指定解答を入力してください。");
-    if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) {
+    if (answers.some((answer) => !hand.some((tile) => tile === answer))) {
       throw new Error("指定解答は手牌に含まれる牌を指定してください。");
     }
     let candidate = {
@@ -3753,9 +3754,7 @@ function buildTilePicker() {
     { name: "answer", input: "admin-answer", max: 14 },
   ].forEach((config) => {
     const target = $(`${config.name}-picker`);
-    const selectableTiles = config.name === "answer"
-      ? tiles.filter((tile) => tile[0] !== "0")
-      : tiles;
+    const selectableTiles = tiles;
     target.innerHTML = `<div class="tile-picker-actions">
       <button type="button" data-action="back">1枚戻す</button>
       <button type="button" data-action="clear">クリア</button>
@@ -3880,9 +3879,9 @@ function normalizeProblemForStorage(problem) {
   const answers = [...new Set(problem.answers.map((answer) => {
     if (typeof answer !== "string" || !/^[0-9][mpsz]$/.test(answer)) throw new Error("指定解答に不正な牌があります。");
     return strictTilesFromMpsz(answer, "指定解答")[0];
-  }).map(normalizePhysicalTile))];
+  }))];
   if (!answers.length) throw new Error("指定解答を入力してください。");
-  if (answers.some((answer) => !hand.some((tile) => samePhysicalTile(tile, answer)))) throw new Error("指定解答は手牌に含まれる牌を指定してください。");
+  if (answers.some((answer) => !hand.some((tile) => tile === answer))) throw new Error("指定解答は手牌に含まれる牌を指定してください。");
   const value = validateProblemObject({
     ...problem,
     id,
@@ -4577,8 +4576,8 @@ function renderSimulatorTable(container, simulation, acceptedAnswers = [], selec
           ${rows.map((row, index) => {
             const classes = [
               index === 0 ? "best-row" : "",
-              acceptedAnswers.some((answer) => samePhysicalTile(answer, row.tile)) ? "accepted-row" : "",
-              selectedTile && samePhysicalTile(selectedTile, row.tile) ? "selected-row" : "",
+              acceptedAnswers.some((answer) => answer === row.tile) ? "accepted-row" : "",
+              selectedTile && selectedTile === row.tile ? "selected-row" : "",
             ].filter(Boolean).join(" ");
             const relative = best ? row.metric / best * 100 : 0;
             return `<tr class="${classes}">
@@ -4721,7 +4720,6 @@ function parseMpsz(text) {
 function parseAnswerTiles(text) {
   return [...new Set(
     parseMpsz(String(text || "").replace(/[\s,、・/]+/g, ""))
-      .map(normalizePhysicalTile)
   )];
 }
 

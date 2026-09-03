@@ -59,7 +59,7 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
         calc_yaku_stats: false,
         calc_shapley_stats: false,
         ron_rate: 0,
-        version: "0.9.14",
+        version: "0.9.15",
       },
     });
   }));
@@ -68,7 +68,8 @@ test("mahjong wasm runs in a browser", async ({ page }) => {
   const ranked = [...result.stats].sort((a, b) => b.exp_score[6] - a.exp_score[6]);
   expect(ranked[0].tile).toBe(17);
   expect(ranked[1].tile).toBe(16);
-  expect(ranked[0].exp_score[6]).toBeCloseTo(1506.9471, 3);
+  // 0.9.15 uses the current unknown pool, without subtracting elapsed turns again.
+  expect(ranked[0].exp_score[6]).toBeCloseTo(1205.5373, 3);
   expect(cspViolations).toEqual([]);
 });
 
@@ -106,7 +107,7 @@ test("large tegawari graph completes without exhausting the WASM call stack", as
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 70,
-        version: "0.9.14",
+        version: "0.9.15",
       },
     });
   }));
@@ -152,7 +153,7 @@ test("a legal ron tile is not exposed as a chi hand-change", async ({ page }) =>
         calc_shapley_stats: false,
         ron_rate: 0.7,
         remaining_tiles: 40,
-        version: "0.9.14",
+        version: "0.9.15",
       },
     });
   }));
@@ -199,7 +200,7 @@ test("mahjong wasm returns exact Shapley and call statistics", async ({ page }) 
         calc_shapley_stats: true,
         ron_rate: 0.7,
         remaining_tiles: 48,
-        version: "0.9.14",
+        version: "0.9.15",
       },
     });
   }));
@@ -232,7 +233,7 @@ test("wasm worker is recycled without breaking analysis", async ({ page }) => {
       calc_yaku_stats: false,
       calc_shapley_stats: false,
       ron_rate: 0,
-      version: "0.9.14",
+      version: "0.9.15",
     };
     const first = await wasmAnalyze(payload);
     const firstGeneration = wasmWorkerGeneration;
@@ -283,7 +284,7 @@ test("red fives can be entered and keep their identity", async ({ page }) => {
   await expect(manzuButtons).toHaveCount(10);
   await expect(manzuButtons.nth(8)).toHaveAttribute("data-tile", "9m");
   await expect(manzuButtons.nth(9)).toHaveAttribute("data-tile", "0m");
-  await expect(page.locator("#answer-picker .picker-tile[data-tile^='0']")).toHaveCount(0);
+  await expect(page.locator("#answer-picker .picker-tile[data-tile^='0']")).toHaveCount(3);
 
   await page.locator("#hand-picker .picker-tile[data-tile='5m']").click();
   await page.locator("#hand-picker .picker-tile[data-tile='0m']").click();
@@ -298,11 +299,17 @@ test("red fives can be entered and keep their identity", async ({ page }) => {
     serialized: tilesToMpszClient(["0m", "5m", "6m"]),
     redIndex: tileIndex("0m"),
     normalIndex: tileIndex("5m"),
+    parsedAnswers: parseAnswerTiles("05m"),
+    storedAnswers: normalizeProblemForStorage({
+      id: "red-answer-storage", hand: "123406m123p123s11z", answers: ["0m"],
+    }).answers,
   }));
   expect(values.parsed).toEqual(["5m", "0m"]);
   expect(values.serialized).toBe("506m");
   expect(values.redIndex).toBe(34);
   expect(values.normalIndex).toBe(4);
+  expect(values.parsedAnswers).toEqual(["0m", "5m"]);
+  expect(values.storedAnswers).toEqual(["0m"]);
 
   const duplicateError = await page.evaluate(() => {
     try {
@@ -787,9 +794,9 @@ test("legacy simulator results and changed settings trigger a lazy statistics re
     const row = { tile: "1m", metric: 1000, yaku_contributions: [] };
     return {
       legacy: simulatorStatsNeedRefresh({ rows: [{ tile: "1m", metric: 1000 }] }, settings),
-      current: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, settings),
-      deferred: simulatorStatsNeedRefresh({ details_complete: false, settings_signature: signature, rows: [row] }, settings),
-      changed: simulatorStatsNeedRefresh({ settings_signature: signature, rows: [row] }, {
+      current: simulatorStatsNeedRefresh({ version: "0.9.15", settings_signature: signature, rows: [row] }, settings),
+      deferred: simulatorStatsNeedRefresh({ version: "0.9.15", details_complete: false, settings_signature: signature, rows: [row] }, settings),
+      changed: simulatorStatsNeedRefresh({ version: "0.9.15", settings_signature: signature, rows: [row] }, {
         ...settings,
         simulator_enable_calls: !settings.simulator_enable_calls,
       }),
@@ -1151,6 +1158,7 @@ test("data tab calculates every missing Shapley result with visible progress", a
     const resolve = window.__shapleyResolvers.shift();
     resolve({
       details_complete: true,
+      version: "0.9.15",
       settings_signature: simulatorSettingsSignature(),
       rows: [{ tile: "1m", yaku_contributions: [{ yaku: 2, shapley: 1000 }] }],
     });

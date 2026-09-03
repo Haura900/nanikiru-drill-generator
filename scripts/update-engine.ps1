@@ -30,7 +30,12 @@ try {
     Write-Host "Installed engine $($lock.version) ($($lock.commit.Substring(0, 7))) / SHA256 $actualHash"
 }
 finally {
-    if (Test-Path $temporary) {
-        Remove-Item -LiteralPath $temporary -Recurse -Force
+    if (Test-Path -LiteralPath $temporary) {
+        $resolvedTemporary = [IO.Path]::GetFullPath($temporary)
+        $resolvedTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $resolvedTemporary.StartsWith($resolvedTempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Temporary engine directory escaped the system temporary directory."
+        }
+        Remove-Item -LiteralPath $resolvedTemporary -Recurse -Force
     }
 }
