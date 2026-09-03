@@ -1839,6 +1839,9 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   }
   attempts.push({ at: now - 2 * 86400000, correct: true, genre: "suspension" });
   await page.addInitScript(({ attempts }) => {
+    // Init scripts also run in newly attached frames. A late auth frame must
+    // not replace the progress written by this test with the original seed.
+    if (window.top !== window) return;
     localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({
       suspension_wrong_transitions: 3,
       quiz_random_transform: false,
@@ -1879,8 +1882,8 @@ test("only correct-to-wrong transitions count and the configured threshold suspe
   await page.locator(".resume-problem").click();
   await expect.poll(() => page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
-    return state?.suspended === true;
-  }), { timeout: 15000 }).toBe(false);
+    return { suspended: state?.suspended, wrongTransitionCount: state?.wrongTransitionCount };
+  }), { timeout: 15000 }).toEqual({ suspended: false, wrongTransitionCount: 0 });
   const resumed = await page.evaluate(() => {
     const state = JSON.parse(localStorage.getItem("nanikiru-learning-v1")).suspension;
     return { state, dueIds: dueReviewProblems().map((problem) => problem.id) };
