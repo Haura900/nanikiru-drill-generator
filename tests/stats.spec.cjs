@@ -2,6 +2,7 @@ const { test, expect } = require("@playwright/test");
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     localStorage.clear();
     localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({ quiz_random_transform: false }));
   });
@@ -110,6 +111,7 @@ test("問題一覧から欠けた履歴もNet Matureと成績に残る", async (
 
 test("セーブデータを生成してClipboard APIへコピーできる", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     window.__copiedSave = "";
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

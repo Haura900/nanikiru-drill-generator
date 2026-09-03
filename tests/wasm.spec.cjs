@@ -3,6 +3,7 @@ const zlib = require("node:zlib");
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     if (!localStorage.getItem("nanikiru-review-settings-v1")) {
       localStorage.setItem("nanikiru-review-settings-v1", JSON.stringify({ quiz_random_transform: false }));
     }
@@ -1609,6 +1610,7 @@ test("oversized backup input and decompressed data are rejected", async ({ page 
 
 test("management rows are lazy and paginated", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     const problems = Array.from({ length: 450 }, (_, index) => ({
       id: `lazy-${index}`, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: `分類${index % 4}`,
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -1626,6 +1628,7 @@ test("management rows are lazy and paginated", async ({ page }) => {
 
 test("quiz shows total unseen count and random-mode remaining count", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     const makeProblem = (id, genre) => ({
       id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre,
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -1650,6 +1653,7 @@ test("quiz shows total unseen count and random-mode remaining count", async ({ p
 
 test("a first answer appears in learning activity and review interval charts", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     const now = Date.now();
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "first-chart", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "集計確認",
@@ -1707,6 +1711,7 @@ test("learning activity counts every answer and retains the full date for today'
 test("problem additions are grouped by days ago with a daily average", async ({ page }) => {
   const seedNow = Date.now();
   await page.addInitScript(({ seedNow }) => {
+    if (window.top !== window) return;
     const makeProblem = (id, createdAt) => ({
       id, hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "追加集計",
       created_at: new Date(createdAt).toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -1743,6 +1748,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
   const previousDueAt = Date.UTC(nowJst.getUTCFullYear(), nowJst.getUTCMonth(), nowJst.getUTCDate()) - 9 * 60 * 60 * 1000;
   const previousAt = previousDueAt - 7 * 86400000;
   await page.addInitScript(({ previousAt, previousDueAt }) => {
+    if (window.top !== window) return;
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "undo-answer", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "取消確認",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -1754,13 +1760,23 @@ test("the latest answer can be cancelled with its previous review schedule resto
 
   await page.goto("http://127.0.0.1:18765/");
   await expect(page.locator("#nav")).toBeVisible();
+  const beforeAnswer = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"]);
+  expect(beforeAnswer.dueAt).toBe(previousDueAt);
+  expect(beforeAnswer.attempts).toHaveLength(1);
   await page.locator("#hand button.tile[data-tile='2m']").click();
   await expect(page.locator("#undo-current-answer")).toBeVisible();
+  // Exercise the delayed same-origin frame that previously reseeded history.
+  await page.evaluate(() => new Promise((resolve) => {
+    const frame = document.createElement("iframe");
+    frame.onload = () => { frame.remove(); resolve(); };
+    frame.src = "about:blank";
+    document.body.append(frame);
+  }));
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"].attempts)).toHaveLength(2);
 
   await page.locator("#undo-current-answer").click();
   const restored = await page.evaluate(() => JSON.parse(localStorage.getItem("nanikiru-learning-v1"))["undo-answer"]);
-  expect(restored).toEqual({ attempts: [{ at: previousAt, correct: false, genre: "取消確認" }], dueAt: previousDueAt });
+  expect(restored).toEqual(beforeAnswer);
   await expect(page.locator("#answer-result")).toBeHidden({ timeout: 15000 });
   await expect(page.locator("#hand button.tile[data-tile='1m']")).toBeEnabled();
   await expect(page.locator("#question-genre")).toBeHidden();
@@ -1768,6 +1784,7 @@ test("the latest answer can be cancelled with its previous review schedule resto
 
 test("cancelling a first answer removes the new learning record", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "undo-first", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m", genre: "初回取消",
       created_at: new Date().toISOString(), settings: { turn: 6, round_wind: "1z", seat_wind: "2z", dora_indicators: [], objective: 2 },
@@ -1789,6 +1806,7 @@ test("cancelling a first answer removes the new learning record", async ({ page 
 
 test("quiz display sorts red fives between five and six regardless of mpsz order", async ({ page }) => {
   await page.addInitScript(() => {
+    if (window.top !== window) return;
     Math.random = () => 0.99;
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "red-order", hand: "6057s6057p6057m11z", answers: ["5m"], primary_answer: "5m", genre: "red-order",
@@ -1900,6 +1918,7 @@ test("restored text cannot create script or event attributes", async ({ page }) 
     '</textarea><script>window.__xss=1</script>',
   ];
   await page.addInitScript(({ attacks }) => {
+    if (window.top !== window) return;
     localStorage.setItem("nanikiru-problems-v1", JSON.stringify([{
       id: "xss-safe-id", hand: "123m123p123s11122z", answers: ["1m"], primary_answer: "1m",
       genre: attacks[0], note: attacks[1], prompt_note: attacks[2], created_at: new Date().toISOString(),
